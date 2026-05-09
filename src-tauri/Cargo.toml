@@ -1,0 +1,40 @@
+[package]
+name = "wichat-reader"
+version = "0.1.0"
+description = "私有化微信内容管理桌面应用"
+authors = ["Wichat Team"]
+license = "MIT"
+repository = ""
+edition = "2021"
+rust-version = "1.77.2"
+
+[lib]
+name = "wichat_reader_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+serde_json = "1.0"
+serde = { version = "1.0", features = ["derive"] }
+serde_yaml = "0.9"
+log = "0.4"
+notify = "6.1"
+tauri = { version = "2", features = ["devtools"] }
+tauri-plugin-log = "2"
+tauri-plugin-dialog = "2"
+tauri-plugin-process = "2"
+tauri-plugin-opener = "2"
+gray_matter = "0.2"
+walkdir = "2"
+chrono = { version = "0.4", features = ["serde"] }
+tokio = { version = "1", features = ["rt-multi-thread", "macros"] }
+futures-util = "0.3"
+base64 = "0.22"
+regex = "1"
+dirs = "5"
+uuid = { version = "1", features = ["v4"] }
+tempfile = "3"
+reqwest = { version = "0.12", default-features = false, features = ["blocking", "json", "rustls-tls"] }
+opener = "0.7"
