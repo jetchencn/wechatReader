@@ -67,6 +67,8 @@ pub fn run() {
             commands::save_file_dialog,
             commands::open_url,
             commands::get_env_var,
+            commands::run_cli,
+            commands::check_init_status,
         ])
         .setup(setup_app)
         .run(tauri::generate_context!())

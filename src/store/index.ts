@@ -188,7 +188,7 @@ useAppStore.subscribe((state, prevState) => {
   ) {
     if (persistTimeout) clearTimeout(persistTimeout);
     persistTimeout = setTimeout(() => {
-      get().persistData();
+      useAppStore.getState().persistData();
     }, 1000);
   }
 });
