@@ -1,7 +1,0 @@
-/Users/chenshibin/Documents/AIPoject/wechatReader/src-cli/target/release/deps/vcpkg-43d500284a4a328e.d: /Users/chenshibin/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/vcpkg-0.2.15/src/lib.rs
-
-/Users/chenshibin/Documents/AIPoject/wechatReader/src-cli/target/release/deps/libvcpkg-43d500284a4a328e.rlib: /Users/chenshibin/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/vcpkg-0.2.15/src/lib.rs
-
-/Users/chenshibin/Documents/AIPoject/wechatReader/src-cli/target/release/deps/libvcpkg-43d500284a4a328e.rmeta: /Users/chenshibin/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/vcpkg-0.2.15/src/lib.rs
-
-/Users/chenshibin/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/vcpkg-0.2.15/src/lib.rs:
