@@ -148,7 +148,25 @@ fn search_in_chat(
     let chat_username = ctx["username"].as_str().unwrap_or("");
     let chat_display = ctx["display_name"].as_str().unwrap_or("");
 
-    for table_ctx in &tables {
+    // 兼容没有 message_tables 的上下文（如 global_search 直接构造的简单上下文）
+    let table_list: Vec<Value> = if tables.is_empty() {
+        if let Some(db_path) = ctx["db_path"].as_str() {
+            if let Some(table_name) = ctx["table_name"].as_str() {
+                vec![serde_json::json!({
+                    "db_path": db_path,
+                    "table_name": table_name,
+                })]
+            } else {
+                vec![]
+            }
+        } else {
+            vec![]
+        }
+    } else {
+        tables
+    };
+
+    for table_ctx in &table_list {
         let db_path = table_ctx["db_path"].as_str().unwrap_or("");
         let table_name = table_ctx["table_name"].as_str().unwrap_or("");
         if db_path.is_empty() || table_name.is_empty() {
@@ -206,7 +224,11 @@ fn search_in_chat(
             entry += &format!(" {}", text);
 
             if entry.len() > 300 {
-                entry = entry[..300].to_string() + "...";
+                let mut boundary = 300;
+                while !entry.is_char_boundary(boundary) {
+                    boundary -= 1;
+                }
+                entry = entry[..boundary].to_string() + "...";
             }
             collected.push((*create_time, entry));
         }
