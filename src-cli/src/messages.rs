@@ -463,7 +463,7 @@ fn resolve_sender_label(
 fn build_message_filters(
     start_ts: Option<i64>,
     end_ts: Option<i64>,
-    _keyword: &str,
+    keyword: &str,
     msg_type_filter: Option<(u64, Option<u64>)>,
 ) -> (Vec<String>, Vec<Box<dyn rusqlite::types::ToSql>>) {
     let mut clauses = Vec::new();
@@ -477,6 +477,9 @@ fn build_message_filters(
         clauses.push("create_time <= ?".to_string());
         params.push(Box::new(ts));
     }
+
+    // 关键词搜索在 Rust 端解压后进行（数据可能被 zstd 压缩）
+    // 此处不做 SQL LIKE 过滤
 
     if let Some((base_type, sub_type)) = msg_type_filter {
         clauses.push("(local_type & 0xFFFFFFFF) = ?".to_string());

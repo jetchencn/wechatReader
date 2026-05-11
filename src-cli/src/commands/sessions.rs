@@ -40,10 +40,10 @@ pub fn run(
          LIMIT ?1"
     ).expect("准备查询失败");
 
-    let rows = stmt.query_map([limit], |row| {
+    let rows = stmt.query_map([limit], |row| -> Result<_, rusqlite::Error> {
         let username: String = row.get(0)?;
         let unread: Option<i64> = row.get(1)?;
-        let summary: Option<Vec<u8>> = row.get(2)?;
+        let summary: Option<String> = row.get(2)?;
         let ts: i64 = row.get(3)?;
         let msg_type: i64 = row.get(4)?;
         let sender: Option<String> = row.get(5)?;
@@ -51,59 +51,50 @@ pub fn run(
         Ok((username, unread, summary, ts, msg_type, sender, sender_name))
     }).expect("查询失败");
 
-    let mut results: Vec<Value> = Vec::new();
-    for row in rows.flatten() {
-        let (username, unread, summary, ts, msg_type, sender, sender_name) = row;
-        let display = names_map.get(&username).cloned().unwrap_or_else(|| username.clone());
-        let is_group = username.contains("@chatroom");
-
-        let summary_text = summary
-            .and_then(|s| {
-                if s.len() > 0 && s[0] == 0x28 {
-                    // Try zstd decompress
-                    let mut dec = zstd::Decoder::new(s.as_slice()).ok()?;
-                    let mut text = String::new();
-                    std::io::Read::read_to_string(&mut dec, &mut text).ok()?;
-                    Some(text)
-                } else {
-                    String::from_utf8(s).ok()
+    let results: Vec<Value> = rows
+        .filter_map(|r| {
+            match r {
+                Ok((username, unread, summary, ts, msg_type, sender, sender_name)) => {
+                    let display = names_map.get(&username).cloned().unwrap_or_else(|| username.clone());
+                    let is_group = username.contains("@chatroom");
+                    let summary_text = summary.as_ref()
+                        .map(|s| {
+                            if s.contains(":\n") {
+                                s.split(":\n").nth(1).unwrap_or(s).to_string()
+                            } else {
+                                s.clone()
+                            }
+                        })
+                        .unwrap_or_default();
+                    let sender_display = if is_group {
+                        sender.as_ref()
+                            .and_then(|s| names_map.get(s))
+                            .cloned()
+                            .or_else(|| sender_name.clone())
+                            .unwrap_or_default()
+                    } else { String::new() };
+                    let time_str = chrono::DateTime::from_timestamp(ts, 0)
+                        .map(|dt| dt.format("%m-%d %H:%M").to_string())
+                        .unwrap_or_default();
+                    Some(serde_json::json!({
+                        "chat": display,
+                        "username": username,
+                        "is_group": is_group,
+                        "unread": unread.unwrap_or(0),
+                        "last_message": summary_text,
+                        "msg_type": messages::format_msg_type(msg_type),
+                        "sender": sender_display,
+                        "timestamp": ts,
+                        "time": time_str,
+                    }))
                 }
-            })
-            .map(|s| {
-                if s.contains(":\n") {
-                    s.split(":\n").nth(1).unwrap_or(&s).to_string()
-                } else {
-                    s
+                Err(e) => {
+                    eprintln!("[DEBUG] 行读取错误: {:?}", e);
+                    None
                 }
-            })
-            .unwrap_or_default();
-
-        let sender_display = if is_group {
-            sender.as_ref()
-                .and_then(|s| names_map.get(s))
-                .cloned()
-                .or_else(|| sender_name.clone())
-                .unwrap_or_default()
-        } else {
-            String::new()
-        };
-
-        let time_str = chrono::DateTime::from_timestamp(ts, 0)
-            .map(|dt| dt.format("%m-%d %H:%M").to_string())
-            .unwrap_or_default();
-
-        results.push(serde_json::json!({
-            "chat": display,
-            "username": username,
-            "is_group": is_group,
-            "unread": unread.unwrap_or(0),
-            "last_message": summary_text,
-            "msg_type": messages::format_msg_type(msg_type),
-            "sender": sender_display,
-            "timestamp": ts,
-            "time": time_str,
-        }));
-    }
+            }
+        })
+        .collect();
 
     if fmt == "json" {
         formatter::output_json(&results);

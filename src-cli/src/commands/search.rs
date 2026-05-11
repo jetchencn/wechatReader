@@ -45,6 +45,9 @@ pub fn run(
             .map(|(_, base, sub)| (*base, *sub))
     });
 
+    // 关键词搜索需要更大的批量（解压后过滤），设为 500
+    let search_batch = if keyword.is_empty() { limit + offset } else { 500 };
+
     let (scope, entries, failures) = if chat_names.len() == 1 {
         // 单聊搜索
         let ctx = resolve_chat_context(
@@ -55,7 +58,7 @@ pub fn run(
             Some(ctx_val) => {
                 let display = ctx_val["display_name"].as_str().unwrap_or(&chat_names[0]).to_string();
                 let (e, f) = search_in_chat(&ctx_val, keyword, &names_map, &display_name_fn,
-                    start_ts, end_ts, limit + offset, type_filter);
+                    start_ts, end_ts, search_batch, type_filter);
                 (display, e, f)
             }
             None => {
