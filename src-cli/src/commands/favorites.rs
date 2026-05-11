@@ -133,7 +133,7 @@ pub fn run(
 
     let sql = format!(
         "SELECT local_id, type, update_time, content, fromusr, realchatname \
-         FROM fav_db_item {} ORDER BY update_time DESC LIMIT ?1",
+         FROM fav_db_item {} ORDER BY update_time DESC LIMIT ?",
         where_sql
     );
 

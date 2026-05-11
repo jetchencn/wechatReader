@@ -4,8 +4,13 @@
  */
 
 import { MainLayout } from './components/MainLayout';
+import { TooltipProvider } from '@/components/ui/tooltip';
 
 export default function App() {
-  return <MainLayout />;
+  return (
+    <TooltipProvider>
+      <MainLayout />
+    </TooltipProvider>
+  );
 }
 

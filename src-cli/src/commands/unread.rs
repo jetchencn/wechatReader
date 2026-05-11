@@ -43,7 +43,7 @@ pub fn run(
         Ok((
             row.get::<_, String>(0)?,
             row.get::<_, Option<i64>>(1)?,
-            row.get::<_, Option<Vec<u8>>>(2)?,
+            row.get::<_, Option<String>>(2)?,
             row.get::<_, i64>(3)?,
             row.get::<_, i64>(4)?,
             row.get::<_, Option<String>>(5)?,
@@ -58,7 +58,6 @@ pub fn run(
         let is_group = username.contains("@chatroom");
 
         let summary_text = summary
-            .and_then(|s| String::from_utf8(s).ok())
             .map(|s| if s.contains(":\n") { s.split(":\n").nth(1).unwrap_or(&s).to_string() } else { s })
             .unwrap_or_default();
 

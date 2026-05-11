@@ -1,249 +1,226 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState } from 'react';
 import { useAppStore } from '../store';
 import { Button } from '@/components/ui/button';
-import { Checkbox } from '@/components/ui/checkbox';
-import { Input } from '@/components/ui/input';
-import { ScrollArea } from '@/components/ui/scroll-area';
-import { AlertCircle, CheckCircle2, Loader2, Search, SearchX } from 'lucide-react';
+import { CheckCircle2, AlertCircle, Loader2, Play, RefreshCw, XCircle, ArrowRight } from 'lucide-react';
+import { motion, AnimatePresence } from 'motion/react';
 
-interface InitializationWizardProps {
-  onComplete?: () => void;
+interface Step {
+  id: string;
+  name: string;
+  status: 'pending' | 'running' | 'success' | 'error';
+  error?: string;
+  details?: string;
 }
 
-export function InitializationWizard({ onComplete }: InitializationWizardProps) {
-  const [step, setStep] = useState(1);
-  const { setInitialized } = useAppStore();
-  
-  // Step states
-  const [checkingProcess, setCheckingProcess] = useState(true);
-  const [processFound, setProcessFound] = useState(false);
-  const [checkingPath, setCheckingPath] = useState(false);
-  const [pathFound, setPathFound] = useState(false);
-  const [customPath, setCustomPath] = useState('C:\\Users\\Admin\\Documents\\WeChat Files\\wxid_123456\\Msg\\');
-  const [decrypting, setDecrypting] = useState(false);
-  const [decryptProgress, setDecryptProgress] = useState(0);
+export function InitializationWizard({ onSuccess }: { onSuccess?: () => void }) {
+  const { isInitialized, setInitialized, setShowWizard } = useAppStore();
+  const [steps, setSteps] = useState<Step[]>([
+    { id: 'process', name: '检测微信进程', status: 'pending', details: '检测微信是否正在运行并已登录' },
+    { id: 'path', name: '分析数据路径', status: 'pending', details: '定位微信本地数据库文件存储目录' },
+    { id: 'init', name: '执行初始化', status: 'pending', details: '解析通讯录及关联归档数据' },
+  ]);
+  const [isExecuting, setIsExecuting] = useState(false);
 
-  // Simulate Step 1: Detect Process
-  useEffect(() => {
-    if (step === 1) {
-      const timer = setTimeout(() => {
-        setProcessFound(true);
-        setCheckingProcess(false);
-      }, 1500);
-      return () => clearTimeout(timer);
-    }
-  }, [step]);
+  const updateStepStatus = (id: string, status: Step['status'], error?: string, details?: string) => {
+    setSteps(prev => prev.map(s => 
+      s.id === id ? { ...s, status, error, details: details || s.details } : s
+    ));
+  };
 
-  // Simulate Step 2 & 3: Path and Decrypt
-  useEffect(() => {
-    if (step === 2) {
-      setCheckingPath(true);
-      const timer = setTimeout(() => {
-        setPathFound(true);
-        setCheckingPath(false);
-      }, 1000);
-      return () => clearTimeout(timer);
-    }
-    
-    if (step === 3) {
-      setDecrypting(true);
-      let p = 0;
-      const timer = setInterval(() => {
-        p += 20;
-        setDecryptProgress(p);
-        if (p >= 100) {
-          clearInterval(timer);
-          setDecrypting(false);
-        }
-      }, 400);
-      return () => clearInterval(timer);
-    }
-  }, [step]);
+  const resetSteps = () => {
+    setSteps(prev => prev.map(s => ({ ...s, status: 'pending', error: undefined })));
+  };
 
-  const handleNext = () => setStep(s => s + 1);
-  const handlePrev = () => setStep(s => s - 1);
-  
-  const handleComplete = () => {
-    setInitialized(true);
-    if (onComplete) {
-      onComplete();
+  const startInitialization = async () => {
+    setIsExecuting(true);
+    resetSteps();
+
+    // Step 1: Detect Process
+    updateStepStatus('process', 'running');
+    await new Promise(r => setTimeout(r, 1500));
+    const processSuccess = true; // Simulated success
+    if (processSuccess) {
+      updateStepStatus('process', 'success', undefined, '已找到微信进程 (C:\\Program Files\\Tencent\\WeChat\\WeChat.exe)');
     } else {
-      useAppStore.getState().setShowWizard(false);
+      updateStepStatus('process', 'error', '未发现微信进程，请确保微信已启动并登录');
+      setIsExecuting(false);
+      return;
+    }
+
+    // Step 2: Data Path
+    updateStepStatus('path', 'running');
+    await new Promise(r => setTimeout(r, 1200));
+    const pathSuccess = true; // Simulated success
+    if (pathSuccess) {
+      updateStepStatus('path', 'success', undefined, '已自动定位数据目录 (WeChat Files\\wxid_...\\Msg)');
+    } else {
+      updateStepStatus('path', 'error', '无法自动定位数据路径，请手动指引');
+      setIsExecuting(false);
+      return;
+    }
+
+    // Step 3: Initialization
+    updateStepStatus('init', 'running');
+    await new Promise(r => setTimeout(r, 2000));
+    const initSuccess = true; // Simulated success
+    if (initSuccess) {
+      updateStepStatus('init', 'success', undefined, '成功解析 1,204 条联系人记录');
+      
+      // Give UI a moment to show the success state of the final step
+      await new Promise(r => setTimeout(r, 800));
+      
+      setInitialized(true);
+      setIsExecuting(false);
+    } else {
+      updateStepStatus('init', 'error', '初始化过程中发生未知错误，请重试');
+      setIsExecuting(false);
     }
   };
 
   return (
-    <div className="flex items-center justify-center h-full w-full bg-[#F4F4F5] text-[#18181B] font-sans p-6 overflow-hidden">
-      <div className="w-full max-w-4xl h-full flex flex-col overflow-hidden bg-white border border-[#E4E4E7] rounded-2xl shadow-xl">
-        <header className="flex items-center justify-between px-6 py-4 bg-[#F9F9FB] border-b border-[#E4E4E7]">
-          <div className="flex items-center gap-3">
-            <div className="w-8 h-8 bg-black rounded-lg flex items-center justify-center shrink-0">
-              <svg className="w-5 h-5 text-white" viewBox="0 0 100 100" fill="none" stroke="currentColor" xmlns="http://www.w3.org/2000/svg">
-                <path d="M 12 25 L 34 80 L 55 25 L 76 80 L 88 45" strokeWidth="16" strokeLinejoin="round" strokeLinecap="round" />
-                <circle cx="92" cy="16" r="10" fill="currentColor" stroke="none" />
-              </svg>
-            </div>
-            <span className="font-semibold text-lg tracking-tight italic">Wichat Reader</span>
-            <div className="h-4 w-[1px] bg-[#E4E4E7] mx-2"></div>
-            <span className="text-[10px] text-[#A1A1AA] uppercase tracking-widest font-bold">初始化向导</span>
-          </div>
-          <div className="flex items-center gap-2">
-             {[1, 2, 3].map(s => (
-                <div key={s} className="flex gap-1">
-                   <div className={`w-8 h-1.5 rounded-full ${s <= step ? 'bg-black' : 'bg-[#E4E4E7]'} transition-colors`} />
-                </div>
-              ))}
-          </div>
-        </header>
-        
-        <main className="p-8 flex-1 overflow-auto flex flex-col justify-center">
-          {/* Step 1 */}
-          {step === 1 && (
-            <div className="flex flex-col items-center justify-center w-full max-w-md mx-auto">
-               <div className="bg-white border-2 border-black rounded-xl p-8 shadow-md w-full text-center">
-                  <div className="flex items-center justify-center mb-6">
-                    <div className="w-10 h-10 bg-black text-white rounded-lg flex items-center justify-center text-sm font-bold italic">1</div>
-                  </div>
-                  <h3 className="text-lg font-semibold mb-2">检测微信进程</h3>
-                  
-                  <div className="mt-6">
-                    {checkingProcess ? (
-                      <div className="flex flex-col items-center gap-4 text-[#71717A]">
-                         <div className="w-6 h-6 border-2 border-black border-t-transparent rounded-full animate-spin"></div>
-                         <span className="text-[10px] uppercase tracking-widest font-bold">扫描本地进程中...</span>
-                      </div>
-                    ) : (
-                      processFound ? (
-                        <div className="flex flex-col items-center gap-3">
-                           <div className="px-3 py-1 bg-green-50 text-green-600 rounded text-xs font-bold uppercase tracking-wider flex items-center gap-2">
-                             <CheckCircle2 className="w-4 h-4" />
-                             发现微信进程
-                           </div>
-                           <div className="flex flex-col items-center bg-[#F4F4F5] border border-[#E4E4E7] p-4 rounded-lg w-full mt-2">
-                              <span className="text-[10px] text-[#A1A1AA] uppercase tracking-wider font-bold mb-1">执行路径</span>
-                              <span className="text-xs text-[#52525B] break-all text-center">C:\Program Files\Tencent\WeChat\WeChat.exe</span>
-                           </div>
-                        </div>
-                      ) : (
-                        <div className="flex flex-col items-center gap-3">
-                           <div className="px-3 py-1 bg-yellow-50 text-yellow-600 rounded text-xs font-bold uppercase tracking-wider flex items-center gap-2">
-                             <AlertCircle className="w-4 h-4" />
-                             未找到进程
-                           </div>
-                           <p className="text-sm text-[#71717A] mt-2">请先启动 PC 微信并登录</p>
-                        </div>
-                      )
-                    )}
-                  </div>
-               </div>
-            </div>
-          )}
+    <div className="h-full flex flex-col pt-2">
+      <div className="mb-8">
+        <h3 className="text-xl font-bold text-[#18181B] flex items-center gap-2 mb-1">
+          <Database className="w-5 h-5 text-[#52525B]" />
+          初始化配置
+        </h3>
+        <p className="text-sm text-[#71717A]">检测微信环境并准备同步本地归档数据</p>
+      </div>
 
-          {/* Step 2 */}
-          {step === 2 && (
-             <div className="flex flex-col w-full max-w-md mx-auto">
-                <div className="bg-white border-2 border-black rounded-xl p-8 shadow-md w-full">
-                  <div className="flex items-center justify-between mb-6">
-                    <div className="flex items-center gap-3">
-                      <div className="w-8 h-8 bg-black text-white rounded-lg flex items-center justify-center text-xs font-bold italic">2</div>
-                      <h3 className="text-base font-semibold">分析数据路径</h3>
+      <div className="flex-1 flex flex-col">
+        <div className="flex-1 space-y-8 pb-10 border-t border-[#F4F4F5] pt-10">
+          {steps.map((step, index) => (
+            <div key={step.id} className="relative">
+              {/* Connector line */}
+              {index < steps.length - 1 && (
+                <div className="absolute left-[15px] top-[32px] bottom-[-32px] w-[2px] bg-[#F4F4F5]" />
+              )}
+              
+              <div className="flex items-start gap-5">
+                <div className="relative z-10 shrink-0 w-8 h-8 flex items-center justify-center">
+                  {step.status === 'pending' && (
+                    <div className="w-3 h-3 rounded-full bg-[#E4E4E7]" />
+                  )}
+                  {step.status === 'running' && (
+                    <Loader2 className="w-5 h-5 text-blue-500 animate-spin" />
+                  )}
+                  {step.status === 'success' && (
+                    <div className="bg-green-100 rounded-full p-1 shadow-sm">
+                      <CheckCircle2 className="w-5 h-5 text-green-600" />
+                    </div>
+                  )}
+                  {step.status === 'error' && (
+                    <XCircle className="w-7 h-7 text-red-500" />
+                  )}
+                </div>
+                
+                <div className="flex-1 pt-0.5">
+                  <div className="flex items-center justify-between mb-1">
+                    <p className={`text-base font-bold transition-colors ${
+                      step.status === 'running' ? 'text-blue-600' : 
+                      step.status === 'success' ? 'text-[#18181B]' : 'text-[#71717A]'
+                    }`}>
+                      {step.name}
+                    </p>
+                    <div className="flex items-center gap-2">
+                      {step.status === 'running' && (
+                        <span className="text-[10px] bg-blue-50 text-blue-600 px-2 py-0.5 rounded-lg font-bold uppercase tracking-wider animate-pulse border border-blue-100">执行中</span>
+                      )}
+                      {step.status === 'success' && (
+                        <span className="text-[10px] bg-green-50 text-green-600 px-2 py-0.5 rounded-lg font-bold uppercase tracking-wider border border-green-100">已完成</span>
+                      )}
+                      {step.status === 'error' && (
+                        <span className="text-[10px] bg-red-50 text-red-600 px-2 py-0.5 rounded-lg font-bold uppercase tracking-wider border border-red-100">失败</span>
+                      )}
                     </div>
                   </div>
                   
-                  <div className="mt-2">
-                    {checkingPath ? (
-                      <div className="aspect-video bg-[#F4F4F5] rounded-xl border border-dashed border-[#D4D4D8] flex flex-col items-center justify-center gap-3">
-                         <div className="w-5 h-5 border-2 border-black border-t-transparent rounded-full animate-spin"></div>
-                         <span className="text-[10px] text-[#52525B] uppercase tracking-widest font-bold">寻址中...</span>
-                      </div>
+                  <div className="min-h-[20px]">
+                    {step.status === 'error' && step.error ? (
+                      <p className="text-sm text-red-500 flex items-center gap-1.5 font-medium">
+                        <AlertCircle className="w-4 h-4" />
+                        {step.error}
+                      </p>
                     ) : (
-                      <div className="space-y-4">
-                        <div className="bg-[#F9F9FB] border border-[#E4E4E7] p-4 rounded-xl flex items-start gap-3">
-                           <CheckCircle2 className="w-5 h-5 text-green-500 mt-0.5 shrink-0" />
-                           <div>
-                              <p className="text-sm font-medium text-[#18181B] mb-1">自动检测成功</p>
-                              <p className="text-xs text-[#71717A] font-mono bg-white p-2 border border-[#E4E4E7] rounded truncate" title={customPath}>{customPath}</p>
-                           </div>
-                        </div>
-                        
-                        <div className="pt-2">
-                          <label className="text-[10px] text-[#A1A1AA] uppercase tracking-wider font-bold mb-2 block">手动调整路径配置 (非必填)</label>
-                          <Input 
-                            value={customPath} 
-                            onChange={(e) => setCustomPath(e.target.value)} 
-                            placeholder="C:\Users\...\WeChat Files..."
-                            className="bg-[#F4F4F5] border-[#E4E4E7] focus-visible:ring-black rounded-lg text-xs"
-                          />
-                        </div>
-                      </div>
+                      <p className={`text-sm transition-colors ${step.status === 'success' ? 'text-[#71717A]' : 'text-[#A1A1AA]'}`}>
+                        {step.details}
+                      </p>
                     )}
                   </div>
                 </div>
+              </div>
             </div>
-          )}
+          ))}
+        </div>
 
-          {/* Step 3 */}
-          {step === 3 && (
-            <div className="flex flex-col items-center justify-center w-full max-w-md mx-auto">
-               <div className="bg-white border-2 border-black rounded-xl p-8 shadow-md w-full">
-                  <div className="flex items-center gap-3 mb-6 justify-center">
-                    <div className="w-8 h-8 bg-black text-white rounded-lg flex items-center justify-center text-xs font-bold italic">3</div>
-                    <h3 className="text-base font-semibold">数据库脱机解析</h3>
-                  </div>
-                  
-                  <div className="mt-4">
-                     {decrypting ? (
-                        <div className="space-y-4 text-center">
-                           <div className="h-2 w-full bg-[#F4F4F5] rounded-full overflow-hidden border border-[#E4E4E7]">
-                             <div className="h-full bg-black transition-all duration-300 ease-out" style={{ width: `${decryptProgress}%` }}></div>
-                           </div>
-                           <p className="text-[10px] text-[#A1A1AA] uppercase font-bold tracking-widest">{decryptProgress}% 解析中...</p>
-                        </div>
-                      ) : (
-                        <div className="bg-green-50 text-green-800 p-6 rounded-xl border border-green-200 flex flex-col items-center gap-3 text-center">
-                          <span className="text-2xl">🎉</span>
-                          <p className="text-sm font-semibold">解密测试通过</p>
-                          <p className="text-[10px] uppercase font-bold text-green-600 tracking-wider">成功解析 1204 个联系列表</p>
-                        </div>
-                      )}
-                  </div>
-               </div>
-            </div>
-          )}
-        </main>
-        
-        <footer className="flex justify-between items-center px-8 py-5 border-t border-[#E4E4E7] bg-[#F9F9FB] shrink-0">
-          <Button 
-            variant="outline" 
-            onClick={handlePrev} 
-            disabled={step === 1 || checkingProcess || checkingPath || decrypting}
-            className="border-[#E4E4E7] text-[#18181B] bg-white hover:bg-[#F4F4F5] rounded-xl text-sm px-6 h-10 shadow-sm"
-          >
-            上一步
-          </Button>
+        <div className="mt-auto py-8 flex items-center justify-between border-t border-[#F4F4F5]">
+          <div className="text-sm text-[#71717A]">
+            {isInitialized ? (
+              <span className="flex items-center gap-2 text-green-600 font-bold">
+                <div className="w-2 h-2 rounded-full bg-green-500 animate-pulse" />
+                系统已就绪
+              </span>
+            ) : (
+              <span className="flex items-center gap-2">
+                <div className="w-2 h-2 rounded-full bg-[#E4E4E7]" />
+                等待系统同步数据
+              </span>
+            )}
+          </div>
           
-          {step < 3 ? (
-            <Button 
-              onClick={handleNext} 
-              disabled={
-                (step === 1 && (!processFound || checkingProcess)) || 
-                (step === 2 && checkingPath)
-              }
-              className="bg-black text-white hover:bg-[#27272A] rounded-xl text-sm font-medium px-8 h-10 shadow-md"
-            >
-              下一步
-            </Button>
-          ) : (
-            <Button 
-              onClick={handleComplete} 
-              disabled={decrypting}
-              className="bg-black text-white hover:bg-[#27272A] rounded-xl text-sm font-medium px-8 h-10 shadow-md"
-            >
-              完成
-            </Button>
-          )}
-        </footer>
+          <div className="flex items-center gap-4">
+            {isInitialized && !isExecuting && (
+              <Button 
+                onClick={onSuccess}
+                className="bg-black text-white hover:bg-[#27272A] rounded-xl px-8 h-12 shadow-md flex items-center gap-2.5 font-bold transition-all hover:scale-[1.02] active:scale-[0.98]"
+              >
+                前往订阅设置
+                <ArrowRight className="w-5 h-5" />
+              </Button>
+            )}
+            {!isInitialized || isExecuting ? (
+              <Button 
+                onClick={startInitialization}
+                disabled={isExecuting}
+                className={`rounded-xl px-10 h-12 font-bold shadow-sm transition-all ${
+                  isInitialized 
+                    ? 'bg-white border-2 border-[#E4E4E7] text-[#18181B] hover:bg-[#F4F4F5]' 
+                    : 'bg-black text-white hover:bg-[#27272A] shadow-md'
+                }`}
+              >
+                {isExecuting ? (
+                  <>
+                    <Loader2 className="w-5 h-5 mr-3 animate-spin" />
+                    开始同步...
+                  </>
+                ) : (
+                  <>
+                    <Play className="w-5 h-5 mr-3" />
+                    开始检测并同步
+                  </>
+                )}
+              </Button>
+            ) : (
+              <Button 
+                variant="outline"
+                onClick={startInitialization}
+                className="rounded-xl px-6 h-12 border-2 border-[#E4E4E7] text-[#71717A] hover:bg-[#F4F4F5] font-bold"
+              >
+                <RefreshCw className="w-5 h-5 mr-3" />
+                重新检测
+              </Button>
+            )}
+          </div>
+        </div>
       </div>
     </div>
   );
 }
+
+const Database = ({ className }: { className?: string }) => (
+  <svg className={className} width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+    <ellipse cx="12" cy="5" rx="9" ry="3"/>
+    <path d="M3 5V19A9 3 0 0 0 21 19V5"/>
+    <path d="M3 12A9 3 0 0 0 21 12"/>
+  </svg>
+);

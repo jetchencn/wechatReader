@@ -1,19 +1,19 @@
 {
   "$schema": "../node_modules/@tauri-apps/cli/config.schema.json",
-  "productName": "Wichat Reader",
+  "productName": "WechatReader",
   "version": "0.1.0",
   "identifier": "club.refactoring.wichat-reader",
   "build": {
     "frontendDist": "../dist",
     "devUrl": "http://localhost:5173",
-    "beforeDevCommand": "npm run dev",
+    "beforeDevCommand": "npm run dev:vite",
     "beforeBuildCommand": "npm run build"
   },
   "app": {
     "withGlobalTauri": true,
     "windows": [
       {
-        "title": "Wichat Reader",
+        "title": "WechatReader",
         "label": "main",
         "width": 1200,
         "height": 800,

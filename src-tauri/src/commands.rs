@@ -12,7 +12,7 @@ pub struct AppInfo {
 #[tauri::command]
 pub fn get_app_info() -> Result<AppInfo, String> {
     Ok(AppInfo {
-        name: "Wichat Reader".to_string(),
+        name: "WechatReader".to_string(),
         version: env!("CARGO_PKG_VERSION").to_string(),
     })
 }

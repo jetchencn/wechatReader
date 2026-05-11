@@ -19,6 +19,9 @@ export const mockMessages: WeChatMessage[] = [
   { id: 'm3', type: 'person', contactId: 'c1', senderId: 'c1', senderName: '张三', contentType: 'file', content: '项目需求文档_v2.pdf', metadata: { fileSize: 2.3 * 1024 * 1024 }, timestamp: now - 2 * hour - 15 * 60000, isRead: true },
   { id: 'm4', type: 'group', contactId: 'g1', senderId: 'c2', senderName: '李四', contentType: 'image', content: '[图片]', timestamp: now - 3 * hour, isRead: false },
   { id: 'm5', type: 'group', contactId: 'g1', senderId: 'c1', senderName: '张三', contentType: 'text', content: '周末去哪儿玩？', timestamp: now - 3 * hour - 5 * 60000, isRead: false },
+  { id: 'm6', type: 'person', contactId: 'c2', senderId: 'c2', senderName: '李四', contentType: 'text', content: '这份材料请查收', timestamp: now - 1 * hour, isRead: false },
+  { id: 'm7', type: 'official_account', contactId: 'o1', senderId: 'o1', senderName: '36氪', contentType: 'article', content: 'AI助手将改变世界', metadata: { url: '#' }, timestamp: now - 4 * hour, isRead: true },
+  { id: 'm8', type: 'official_account', contactId: 'o2', senderId: 'o2', senderName: '虎嗅', contentType: 'article', content: '今年科技圈的十大趋势', metadata: { url: '#' }, timestamp: now - 1.5 * day, isRead: false },
 ];
 
 export const mockArticles: Article[] = [
@@ -31,5 +34,4 @@ export const mockViews: SavedView[] = [
   { id: 1, name: '今天消息', icon: '📅', isSystem: true, filters: { timeRange: 'today' } },
   { id: 2, name: '近7天消息', icon: '📅', isSystem: true, filters: { timeRange: '7days' } },
   { id: 3, name: '公众号文章', icon: '📖', isSystem: true, filters: { types: ['official_account'] } },
-  { id: 4, name: '含文件消息', icon: '📎', isSystem: true, filters: { contentTypes: ['file'] } },
 ];

@@ -40,13 +40,13 @@ pub fn run(
     ).expect("准备查询失败");
 
     let rows: Vec<(
-        String, Option<i64>, Option<Vec<u8>>, i64, i64,
+        String, Option<i64>, Option<String>, i64, i64,
         Option<String>, Option<String>,
     )> = stmt.query_map([], |row| {
         Ok((
             row.get::<_, String>(0)?,
             row.get::<_, Option<i64>>(1)?,
-            row.get::<_, Option<Vec<u8>>>(2)?,
+            row.get::<_, Option<String>>(2)?,
             row.get::<_, i64>(3)?,
             row.get::<_, i64>(4)?,
             row.get::<_, Option<String>>(5)?,
@@ -79,8 +79,7 @@ pub fn run(
             let display = names_map.get(username).cloned().unwrap_or_else(|| username.clone());
             let is_group = username.contains("@chatroom");
             let summary_text = summary.as_ref()
-                .and_then(|s| String::from_utf8(s.clone()).ok())
-                .map(|s| if s.contains(":\n") { s.split(":\n").nth(1).unwrap_or(&s).to_string() } else { s })
+                .map(|s| if s.contains(":\n") { s.split(":\n").nth(1).unwrap_or(s).to_string() } else { s.clone() })
                 .unwrap_or_default();
             let time_str = chrono::DateTime::from_timestamp(*ts, 0)
                 .map(|dt| dt.format("%H:%M").to_string())
@@ -131,8 +130,7 @@ pub fn run(
         let display = names_map.get(username).cloned().unwrap_or_else(|| username.clone());
         let is_group = username.contains("@chatroom");
         let summary_text = summary.as_ref()
-            .and_then(|s| String::from_utf8(s.clone()).ok())
-            .map(|s| if s.contains(":\n") { s.split(":\n").nth(1).unwrap_or(&s).to_string() } else { s })
+            .map(|s| if s.contains(":\n") { s.split(":\n").nth(1).unwrap_or(s).to_string() } else { s.clone() })
             .unwrap_or_default();
         let sender_display = if is_group {
             sender.as_ref()

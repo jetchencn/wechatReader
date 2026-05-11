@@ -2,7 +2,7 @@ import React, { useState } from 'react';
 import { useAppStore } from '../store';
 import { ScrollArea } from '@/components/ui/scroll-area';
 import { Button } from '@/components/ui/button';
-import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/components/ui/tooltip';
+import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip';
 import { Input } from '@/components/ui/input';
 import { Contact } from '../types';
 import { formatDistanceToNow } from 'date-fns';
@@ -15,15 +15,15 @@ import {
   MessageSquare,
   ChevronRight,
   ChevronDown,
-  Archive,
+  LogIn,
+  Settings,
   Clock,
   CalendarDays,
-  BookMarked,
-  Paperclip
+  BookMarked
 } from 'lucide-react';
 
 export function Sidebar({ className = '' }: { className?: string }) {
-  const { contacts, views, selectedContactId, selectedViewId, selectContact, selectView, searchQuery, setSearchQuery } = useAppStore();
+  const { contacts, views, selectedContactId, selectedViewId, selectContact, selectView, searchQuery, setSearchQuery, setShowWizard } = useAppStore();
   
   const [expandedSections, setExpandedSections] = useState({
     smart: true,
@@ -52,9 +52,12 @@ export function Sidebar({ className = '' }: { className?: string }) {
     return items.map(contact => (
       <div 
         key={contact.id}
-        onClick={() => selectContact(contact.id)}
-        className={`flex items-center px-4 py-2 cursor-pointer group rounded-lg mx-2 mb-0.5 transition-colors ${
-          selectedContactId === contact.id ? 'bg-[#F4F4F5] border border-[#E4E4E7] shadow-sm text-[#18181B] font-medium' : 'text-[#71717A] hover:bg-[#FAFAFA]'
+        onClick={() => {
+          selectContact(contact.id);
+          setShowWizard(false);
+        }}
+        className={`flex items-center px-4 py-2 cursor-pointer group transition-colors ${
+          selectedContactId === contact.id ? 'bg-[#F4F4F5] text-[#18181B] font-medium border-r-2 border-[#18181B]' : 'text-[#71717A] hover:bg-[#FAFAFA]'
         }`}
       >
         <div className="w-6 h-6 rounded bg-[#E4E4E7] flex items-center justify-center text-xs font-bold mr-3 shrink-0 text-[#18181B]">
@@ -75,7 +78,7 @@ export function Sidebar({ className = '' }: { className?: string }) {
   return (
     <aside className={className || "w-64 bg-white border-r border-[#E4E4E7] flex flex-col"}>
       {/* Search */}
-      <div className="p-4 border-b border-[#E4E4E7]">
+      <div className="p-4 border-b border-[#E4E4E7]" style={{ height: '69px' }}>
         <div className="relative">
           <Search className="absolute left-3 top-2.5 h-4 w-4 text-[#A1A1AA]" />
           <Input 
@@ -100,23 +103,29 @@ export function Sidebar({ className = '' }: { className?: string }) {
             </div>
             {expandedSections.smart && (
               <div className="mt-1 space-y-0.5">
-                {views.map(view => (
-                  <div 
-                    key={view.id}
-                    onClick={() => selectView(view.id)}
-                    className={`flex items-center px-4 py-2 cursor-pointer rounded-lg mx-2 transition-colors ${
-                      selectedViewId === view.id ? 'bg-[#F4F4F5] border border-[#E4E4E7] shadow-sm text-[#18181B] font-medium' : 'text-[#71717A] hover:bg-[#FAFAFA]'
-                    }`}
-                  >
-                    <span className="mr-3 text-sm flex items-center justify-center text-[#52525B]">
-                      {view.id === 1 && <Clock className="w-4 h-4" />}
-                      {view.id === 2 && <CalendarDays className="w-4 h-4" />}
-                      {view.id === 3 && <BookMarked className="w-4 h-4" />}
-                      {view.id === 4 && <Paperclip className="w-4 h-4" />}
-                    </span>
-                    <span className="text-sm flex-1">{view.name}</span>
-                  </div>
-                ))}
+                {subscribedContacts.length === 0 ? (
+                  <div className="px-8 py-2 text-xs text-[#A1A1AA]">暂无订阅，无法生成视图</div>
+                ) : (
+                  views.filter(v => v.id !== 4).map(view => (
+                    <div 
+                      key={view.id}
+                      onClick={() => {
+                      selectView(view.id);
+                      setShowWizard(false);
+                    }}
+                      className={`flex items-center px-4 py-2 cursor-pointer transition-colors ${
+                        selectedViewId === view.id ? 'bg-[#F4F4F5] text-[#18181B] font-medium border-r-2 border-[#18181B]' : 'text-[#71717A] hover:bg-[#FAFAFA]'
+                      }`}
+                    >
+                      <span className="mr-3 text-sm flex items-center justify-center text-[#52525B]">
+                        {view.id === 1 && <Clock className="w-4 h-4" />}
+                        {view.id === 2 && <CalendarDays className="w-4 h-4" />}
+                        {view.id === 3 && <BookMarked className="w-4 h-4" />}
+                      </span>
+                      <span className="text-sm flex-1">{view.name}</span>
+                    </div>
+                  ))
+                )}
               </div>
             )}
           </div>
@@ -136,7 +145,7 @@ export function Sidebar({ className = '' }: { className?: string }) {
                 <div className="flex items-center">
                   {expandedSections.person ? <ChevronDown className="w-3 h-3 mr-1" /> : <ChevronRight className="w-3 h-3 mr-1" />}
                   <Users className="w-3 h-3 mr-1" />
-                  通讯录
+                  联系人
                 </div>
                 <span>{groupedContacts.person.length}</span>
               </div>
@@ -152,11 +161,11 @@ export function Sidebar({ className = '' }: { className?: string }) {
                 <div className="flex items-center">
                   {expandedSections.group ? <ChevronDown className="w-3 h-3 mr-1" /> : <ChevronRight className="w-3 h-3 mr-1" />}
                   <MessageSquare className="w-3 h-3 mr-1" />
-                  群聊
+                  微信群
                 </div>
                 <span>{groupedContacts.group.length}</span>
               </div>
-              {expandedSections.group && renderContactList(groupedContacts.group, '暂无订阅的群聊')}
+              {expandedSections.group && renderContactList(groupedContacts.group, '暂无订阅的微信群')}
             </div>
 
             {/* Official Accounts */}
@@ -177,11 +186,22 @@ export function Sidebar({ className = '' }: { className?: string }) {
           </div>
         </nav>
       </ScrollArea>
-      <div className="p-4 border-t border-[#E4E4E7] text-xs text-[#A1A1AA] flex items-center justify-between transition-colors hover:bg-[#FAFAFA] cursor-pointer group">
-        <div className="flex items-center">
-          <Archive className="w-4 h-4 mr-2" />
-          <span className="group-hover:text-black">本地存档与导出</span>
-        </div>
+      <div className="p-4 border-t border-[#E4E4E7] flex items-center justify-between">
+        <button className="flex items-center gap-2 text-[#18181B] hover:opacity-80 transition-opacity">
+          <div className="w-6 h-6 rounded-full bg-[#E4E4EB] flex items-center justify-center overflow-hidden">
+            <svg className="w-6 h-6 text-white mt-1.5" fill="currentColor" viewBox="0 0 24 24">
+              <path d="M24 20.993V24H0v-2.996A14.977 14.977 0 0112.004 15c4.904 0 9.26 2.354 11.996 5.993zM16.002 8.999a4 4 0 11-8 0 4 4 0 018 0z" />
+            </svg>
+          </div>
+          <span className="text-sm">登录</span>
+        </button>
+        <button 
+          className="flex items-center gap-1.5 text-[#18181B] hover:opacity-80 transition-opacity"
+          onClick={() => setShowWizard(true)}
+        >
+          <Settings className="w-4 h-4" />
+          <span className="text-sm">设置</span>
+        </button>
       </div>
     </aside>
   );

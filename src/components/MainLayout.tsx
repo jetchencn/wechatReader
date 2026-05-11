@@ -1,13 +1,26 @@
-import React from 'react';
+import React, { useEffect } from 'react';
 import { useAppStore } from '../store';
 import { Sidebar } from './Sidebar';
 import { ContentArea } from './ContentArea';
-import { Settings } from 'lucide-react';
-import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/components/ui/tooltip';
 import { SettingsView } from './SettingsView';
+import { Dialog, DialogContent } from '@/components/ui/dialog';
 
 export function MainLayout() {
-  const { isInitialized, showWizard } = useAppStore();
+  const { isInitialized, showWizard, setShowWizard, selectedContactId, selectedViewId, views, selectView } = useAppStore();
+
+  // Auto-show wizard if not initialized
+  useEffect(() => {
+    if (!isInitialized) {
+      setShowWizard(true);
+    }
+  }, [isInitialized, setShowWizard]);
+
+  // Default to first view if initialized and nothing selected
+  useEffect(() => {
+    if (isInitialized && !selectedContactId && !selectedViewId && views.length > 0) {
+      selectView(views[0].id);
+    }
+  }, [isInitialized, selectedContactId, selectedViewId, views, selectView]);
 
   return (
     <div className="flex flex-col h-screen bg-[#F4F4F5] text-[#18181B] font-sans overflow-hidden">
@@ -19,7 +32,7 @@ export function MainLayout() {
               <circle cx="92" cy="16" r="10" fill="currentColor" stroke="none" />
             </svg>
           </div>
-          <span className="font-semibold text-lg tracking-tight italic">Wichat Reader</span>
+          <span className="font-semibold text-lg tracking-tight italic">WechatReader</span>
           <div className="h-4 w-[1px] bg-[#E4E4E7] mx-2"></div>
           <span className="text-sm text-[#71717A]">私有化微信内容管理</span>
         </div>
@@ -35,25 +48,21 @@ export function MainLayout() {
               未配置
             </div>
           )}
-          <TooltipProvider>
-            <Tooltip>
-              <TooltipTrigger className="w-8 h-8 bg-[#E4E4E7] rounded-full flex items-center justify-center hover:bg-[#D4D4D8] transition-colors" onClick={() => useAppStore.getState().setShowWizard(true)}>
-                <Settings className="w-4 h-4 text-[#71717A]" />
-              </TooltipTrigger>
-              <TooltipContent>
-                <p>配置与重新初始化</p>
-              </TooltipContent>
-            </Tooltip>
-          </TooltipProvider>
         </div>
       </header>
 
       <main className="flex flex-1 overflow-hidden">
         <Sidebar className="w-64 bg-white border-r border-[#E4E4E7] flex flex-col" />
         <section className="flex-1 flex flex-col relative bg-[#F9F9FB] border-l border-[#E4E4E7] overflow-hidden">
-          {showWizard ? <SettingsView /> : <ContentArea />}
+          <ContentArea />
         </section>
       </main>
+
+      <Dialog open={showWizard} onOpenChange={setShowWizard}>
+        <DialogContent className="sm:max-w-4xl w-full max-w-4xl h-[80vh] p-0 overflow-hidden flex border-0">
+          <SettingsView />
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }
