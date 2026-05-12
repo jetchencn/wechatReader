@@ -24,7 +24,7 @@ pub fn run(
 
     let display_name_fn = |username: &str| -> String {
         if username.is_empty() { return String::new(); }
-        if username == self_username { "me".to_string() }
+        if username == self_username { "我".to_string() }
         else { names_map.get(username).cloned().unwrap_or_else(|| username.to_string()) }
     };
 

@@ -307,7 +307,7 @@ pub fn display_name_for_username(
     }
     let self_username = get_self_username(db_dir, cache, decrypted_dir);
     if username == self_username {
-        return "me".to_string();
+        return "我".to_string();
     }
     names.get(username).cloned().unwrap_or_else(|| username.to_string())
 }

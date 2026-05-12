@@ -33,7 +33,7 @@ pub fn run(
             return String::new();
         }
         if username == self_username {
-            return "me".to_string();
+            return "我".to_string();
         }
         names_map.get(username).cloned().unwrap_or_else(|| username.to_string())
     };

@@ -39,7 +39,7 @@ pub fn run(
             return String::new();
         }
         if username == self_username {
-            return "me".to_string();
+            return "我".to_string();
         }
         names_map.get(username).cloned().unwrap_or_else(|| username.to_string())
     };
@@ -225,14 +225,14 @@ fn search_in_chat(
                     if sender.contains(chat_display) || chat_display.contains(&sender) {
                         chat_display.to_string()
                     } else {
-                        "me".to_string()
+                        "我".to_string()
                     }
                 } else {
                     let sender_username = id_to_username.get(real_sender_id).cloned().unwrap_or_default();
                     if !sender_username.is_empty() && sender_username == chat_username {
                         chat_display.to_string()
                     } else {
-                        "me".to_string()
+                        "我".to_string()
                     }
                 }
             };
