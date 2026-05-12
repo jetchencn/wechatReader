@@ -467,7 +467,7 @@ export function MessageTable({ messages, title, icon, searchPlaceholder, showFil
                     ) : msg.contentType === 'article' ? (
                       <div className="flex items-center gap-1.5">
                         <BookMarked className="w-3.5 h-3.5 text-emerald-500 shrink-0" />
-                        <span className="text-[#18181B] font-medium truncate">{msg.metadata?.title || msg.content.replace('[链接]', '').replace('[链接/文件]', '').replace(/\s*https?:\/\/\S+/, '').trim() || '公众号文章'}</span>
+                        <span className="truncate">{msg.metadata?.title || msg.content.replace('[链接]', '').replace('[链接/文件]', '').replace(/\s*https?:\/\/\S+/, '').trim() || '公众号文章'}</span>
                       </div>
                     ) : msg.contentType === 'link' ? (
                       <div className="flex items-center gap-1.5">
