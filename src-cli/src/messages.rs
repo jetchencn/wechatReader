@@ -158,14 +158,192 @@ fn extract_img_md5(content: &str) -> Option<String> {
     None
 }
 
+/// Cache for decrypted hardlink.db path (avoid repeated decryption).
+lazy_static::lazy_static! {
+    static ref HARDLINK_DB_CACHE: Mutex<Option<String>> = Mutex::new(None);
+}
+
+/// Ensure hardlink.db is decrypted and return the temp path.
+/// Returns None if decryption fails or key is unavailable.
+fn ensure_hardlink_db(db_dir: &Path) -> Option<std::path::PathBuf> {
+    // Check if already decrypted in this session
+    {
+        let cache = HARDLINK_DB_CACHE.lock().unwrap();
+        if let Some(ref path) = *cache {
+            let pb = std::path::PathBuf::from(path);
+            if pb.is_file() {
+                return Some(pb);
+            }
+        }
+    }
+
+    let hardlink_db_path = db_dir.join("hardlink").join("hardlink.db");
+    if !hardlink_db_path.is_file() {
+        return None;
+    }
+
+    let keys_path = std::path::PathBuf::from(crate::config::keys_file());
+    if !keys_path.exists() {
+        return None;
+    }
+    let keys_content = std::fs::read_to_string(&keys_path).ok()?;
+    let keys_raw: Value = serde_json::from_str(&keys_content).ok()?;
+    let all_keys = crate::key_utils::strip_key_metadata(&keys_raw);
+
+    let key_info = all_keys.get("hardlink/hardlink.db")?;
+    let enc_key_hex = key_info.get("enc_key")?.as_str()?;
+    let enc_key = hex::decode(enc_key_hex).ok()?;
+
+    let tmp_dir = std::env::temp_dir().join("wechat_reader_hardlink");
+    std::fs::create_dir_all(&tmp_dir).ok();
+    let tmp_path = tmp_dir.join("hardlink.db");
+
+    if let Err(_) = crate::crypto::full_decrypt(&hardlink_db_path, &tmp_path, &enc_key) {
+        return None;
+    }
+
+    // Cache the path
+    let mut cache = HARDLINK_DB_CACHE.lock().unwrap();
+    *cache = Some(tmp_path.to_string_lossy().to_string());
+
+    Some(tmp_path)
+}
+
+/// Try to resolve image file path via hardlink.db
+/// In newer WeChat versions, the .dat filename is NOT the md5 from XML,
+/// so we need to use the hardlink database to find the correct mapping.
+///
+/// hardlink.db schema:
+/// - image_hardlink_info_v4: md5_hash(INTEGER), md5(TEXT), type(INTEGER), file_name(TEXT), file_size(INTEGER), modify_time(INTEGER), dir1(INTEGER), dir2(INTEGER)
+/// - dir2id: rowid → username(TEXT) which stores either attach subdir hash or date prefix
+///   dir1 index → attach subdir hash (e.g., "bb4bfb9f62373bd6cb6d0b09521f1edc")
+///   dir2 index → date prefix (e.g., "2025-06")
+fn resolve_image_via_hardlink(
+    db_dir: &Path,
+    content: &str,
+    _date_prefix: &str,
+    attach_dir: &Path,
+    _sub_dir_name: &str,
+) -> Option<String> {
+    let xml_md5 = extract_img_md5(content)?;
+    if xml_md5.is_empty() {
+        return None;
+    }
+
+    let tmp_path = ensure_hardlink_db(db_dir)?;
+    let conn = match rusqlite::Connection::open(&tmp_path) {
+        Ok(c) => c,
+        Err(_) => return None,
+    };
+
+    // Build dir2id lookup: rowid → username (which is dir hash or date prefix)
+    let mut dir_map: HashMap<i64, String> = HashMap::new();
+    if let Ok(mut stmt) = conn.prepare("SELECT rowid, username FROM dir2id") {
+        if let Ok(rows) = stmt.query_map([], |row| {
+            let rowid: i64 = row.get(0)?;
+            let username: String = row.get(1)?;
+            Ok((rowid, username))
+        }) {
+            for row in rows.flatten() {
+                dir_map.insert(row.0, row.1);
+            }
+        }
+    }
+
+    // Query image_hardlink_info_v4 by md5 field (matches XML md5)
+    // dir1 and dir2 are INTEGER indexes into dir2id table
+    let sql = "SELECT file_name, dir1, dir2 FROM image_hardlink_info_v4 WHERE md5 = ?";
+    let mut stmt = match conn.prepare(sql) {
+        Ok(s) => s,
+        Err(_) => return None,
+    };
+    let rows: Vec<(String, i64, i64)> = match stmt.query_map([&xml_md5], |row| {
+        let file_name: String = row.get(0)?;
+        let dir1: i64 = row.get(1)?;
+        let dir2: i64 = row.get(2)?;
+        Ok((file_name, dir1, dir2))
+    }) {
+        Ok(rows) => rows.filter_map(|r| r.ok()).collect(),
+        Err(_) => return None,
+    };
+
+    if rows.is_empty() {
+        return None;
+    }
+
+    // Try each matching row to find an existing file
+    for (file_name, dir1_idx, dir2_idx) in &rows {
+        let dir1_name = dir_map.get(dir1_idx).cloned().unwrap_or_default();
+        let dir2_name = dir_map.get(dir2_idx).cloned().unwrap_or_default();
+
+        if dir1_name.is_empty() || dir2_name.is_empty() {
+            continue;
+        }
+
+        // Build path: attach/{dir1_hash}/{date_prefix}/Img/{file_name}
+        // Prefer _h.dat (PNG) over .dat (wxgf) over _t.dat (JPEG thumbnail)
+        let base = if let Some(s) = file_name.strip_suffix("_h.dat") {
+            s.to_string()
+        } else if let Some(s) = file_name.strip_suffix("_t.dat") {
+            s.to_string()
+        } else if let Some(s) = file_name.strip_suffix("_M.dat") {
+            s.to_string()
+        } else if let Some(s) = file_name.strip_suffix(".dat") {
+            s.to_string()
+        } else {
+            file_name.clone()
+        };
+        let variants = [
+            format!("{}_h.dat", base),
+            format!("{}_t.dat", base),
+            format!("{}_M.dat", base),
+            file_name.clone(),
+        ];
+
+        for variant in &variants {
+            let full_path = attach_dir.join(&dir1_name).join(&dir2_name).join("Img").join(variant);
+            if full_path.is_file() {
+                return Some(full_path.to_string_lossy().to_string());
+            }
+        }
+    }
+
+    None
+}
+
+fn extract_attr(xml: &str, attr: &str) -> Option<String> {
+    // Pattern: attr="value" or attr='value'
+    let pattern_double = format!("{}=\"", attr);
+    if let Some(start) = xml.find(&pattern_double) {
+        let after = &xml[start + pattern_double.len()..];
+        if let Some(end) = after.find('"') {
+            return Some(after[..end].to_string());
+        }
+    }
+    let pattern_single = format!("{}='", attr);
+    if let Some(start) = xml.find(&pattern_single) {
+        let after = &xml[start + pattern_single.len()..];
+        if let Some(end) = after.find('\'') {
+            return Some(after[..end].to_string());
+        }
+    }
+    None
+}
+
 /// Check if a .dat filename matches the image md5 (filename is derived from md5)
 fn dat_matches_md5(filename: &str, md5: &str) -> bool {
     // Strip suffixes and extension: _M.dat, _h.dat, _t.dat, .dat
-    let base = filename
-        .trim_end_matches(".dat")
-        .trim_end_matches("_t")
-        .trim_end_matches("_h")
-        .trim_end_matches("_M");
+    let base = if let Some(s) = filename.strip_suffix("_h.dat") {
+        s
+    } else if let Some(s) = filename.strip_suffix("_t.dat") {
+        s
+    } else if let Some(s) = filename.strip_suffix("_M.dat") {
+        s
+    } else if let Some(s) = filename.strip_suffix(".dat") {
+        s
+    } else {
+        filename
+    };
     // The filename may be the first N chars of the md5, or the full md5
     if base.len() >= 8 && md5.len() >= 8 {
         base == &md5[..base.len().min(md5.len())] || md5.starts_with(base)
@@ -284,30 +462,37 @@ fn resolve_media_path(
         // Use cached subdirectory listing instead of repeated read_dir
         let subdirs = get_attach_subdirs(&attach_dir);
 
-        // Try exact md5 match first: build direct path and check existence
+        // For images: try hardlink.db lookup first (most reliable for newer WeChat versions)
+        // The hardlink.db maps md5 → actual file_name + directory path
+        if base_type == 3 {
+            if let Some(path) = resolve_image_via_hardlink(db_dir, content, &date_prefix, &attach_dir, sub_dir_name) {
+                return (Some(path), true);
+            }
+        }
+
+        // Try exact md5 match: build direct path and check existence
         if let Some(ref md5) = img_md5 {
-            for subdir_name in &subdirs {
-                let sub = attach_dir.join(subdir_name).join(&date_prefix).join(sub_dir_name);
-                if !sub.is_dir() {
-                    continue;
-                }
-                // Try variants in priority order: original > medium > hd > thumb
-                let variants = [
-                    format!("{}.dat", md5),
-                    format!("{}_M.dat", md5),
-                    format!("{}_h.dat", md5),
-                    format!("{}_t.dat", md5),
-                ];
-                for variant in &variants {
-                    let path = sub.join(variant);
-                    if path.is_file() {
-                        return (Some(path.to_string_lossy().to_string()), true);
+            if !md5.is_empty() {
+                for subdir_name in &subdirs {
+                    let sub = attach_dir.join(subdir_name).join(&date_prefix).join(sub_dir_name);
+                    if !sub.is_dir() {
+                        continue;
+                    }
+                    // Try variants in priority order: hd > original > medium > thumb
+                    let variants = [
+                        format!("{}_h.dat", md5),
+                        format!("{}_t.dat", md5),
+                        format!("{}_M.dat", md5),
+                        format!("{}.dat", md5),
+                    ];
+                    for variant in &variants {
+                        let path = sub.join(variant);
+                        if path.is_file() {
+                            return (Some(path.to_string_lossy().to_string()), true);
+                        }
                     }
                 }
             }
-            // md5 was provided but no file found — skip the expensive fallback scan
-            // (without md5 match, scanning is pointless as we can't identify the right file)
-            return (None, false);
         }
 
         // Fallback (no md5): scan for best match using cached subdirs
@@ -538,6 +723,7 @@ fn format_message_text(
         3 => {
             let mut media_info = String::new();
             if resolve_media && db_dir.is_some() && !content.is_empty() {
+                let img_md5 = extract_img_md5(content);
                 let (path, exists) = resolve_media_path(
                     db_dir.unwrap(), content, local_type, create_time_ts, Some(chat_username)
                 );

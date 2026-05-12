@@ -1,4 +1,4 @@
-import React, { useMemo, useState, useEffect } from 'react';
+import React, { useMemo, useState, useEffect, useRef } from 'react';
 import { useAppStore } from '../store';
 import { GlobalSearch } from './GlobalSearch';
 import { FolderSync, User, Users, BookOpen, Loader2 } from 'lucide-react';
@@ -6,8 +6,66 @@ import { MessageTable } from './MessageTable';
 import { WeChatMessage } from '../types';
 import { getMaxQueryLimit } from './SettingsView';
 
+// LRU cache for contact messages (keyed by contactId)
+const messageCache = new Map<string, { messages: WeChatMessage[]; timestamp: number }>();
+const MESSAGE_CACHE_TTL = 5 * 60 * 1000; // 5 minutes
+const MESSAGE_CACHE_MAX = 20;
+
+// Prefetch queue: track in-flight prefetch requests
+const prefetchInFlight = new Set<string>();
+
+function getCachedMessages(contactId: string): WeChatMessage[] | null {
+  const entry = messageCache.get(contactId);
+  if (!entry) return null;
+  if (Date.now() - entry.timestamp > MESSAGE_CACHE_TTL) {
+    messageCache.delete(contactId);
+    return null;
+  }
+  return entry.messages;
+}
+
+function setCachedMessages(contactId: string, messages: WeChatMessage[]) {
+  // Evict oldest entries if cache is full
+  if (messageCache.size >= MESSAGE_CACHE_MAX) {
+    let oldestKey = '';
+    let oldestTime = Infinity;
+    for (const [k, v] of messageCache) {
+      if (v.timestamp < oldestTime) {
+        oldestTime = v.timestamp;
+        oldestKey = k;
+      }
+    }
+    if (oldestKey) messageCache.delete(oldestKey);
+  }
+  messageCache.set(contactId, { messages, timestamp: Date.now() });
+}
+
+// Prefetch messages for a contact (low-priority background fetch)
+export function prefetchContactMessages(contactId: string) {
+  // Skip if already cached or in-flight
+  if (getCachedMessages(contactId) || prefetchInFlight.has(contactId)) return;
+
+  prefetchInFlight.add(contactId);
+  const maxLimit = getMaxQueryLimit();
+  const params = new URLSearchParams({ limit: String(maxLimit), offset: '0', chat: contactId });
+
+  fetch(`/api/messages?${params.toString()}`)
+    .then(res => res.ok ? res.json() : null)
+    .then(json => {
+      if (json?.ok && Array.isArray(json.data?.messages)) {
+        setCachedMessages(contactId, json.data.messages as WeChatMessage[]);
+      }
+    })
+    .catch(() => { /* silent */ })
+    .finally(() => { prefetchInFlight.delete(contactId); });
+}
+
 export function ContentArea() {
   const { selectedContactId, selectedViewId, selectedContactType, searchQuery, contacts, messages } = useAppStore();
+
+  // Use ref for contacts to avoid re-fetching when contacts array reference changes
+  const contactsRef = useRef(contacts);
+  contactsRef.current = contacts;
 
   // Fetch real messages from server for selected contact
   const [serverMessages, setServerMessages] = useState<WeChatMessage[] | null>(null);
@@ -32,11 +90,22 @@ export function ContentArea() {
     }
 
     // Only fetch for subscribed contacts
-    const contact = contacts.find(c => c.id === selectedContactId);
+    const contact = contactsRef.current.find(c => c.id === selectedContactId);
     if (!contact || !contact.isSubscribed) {
       setServerMessages(null);
       setFetchError(null);
       return;
+    }
+
+    // Check cache first (skip on explicit refresh)
+    if (refreshKey === 0) {
+      const cached = getCachedMessages(selectedContactId);
+      if (cached) {
+        setServerMessages(cached);
+        setIsLoading(false);
+        setFetchError(null);
+        return;
+      }
     }
 
     let cancelled = false;
@@ -44,29 +113,76 @@ export function ContentArea() {
     async function fetchMessages() {
       setIsLoading(true);
       setFetchError(null);
+      const maxLimit = getMaxQueryLimit();
+
+      // Phase 1: Quick fetch with small limit for instant display
+      const quickLimit = 200;
       try {
-        const maxLimit = getMaxQueryLimit();
-        // Use username (selectedContactId) instead of display name (contact.name)
-        // to avoid display name resolution issues in the CLI
-        const params = new URLSearchParams({ limit: String(maxLimit), offset: '0', chat: selectedContactId });
-        const res = await fetch(`/api/messages?${params.toString()}`);
-
-        if (!res.ok) {
-          throw new Error(`Server returned ${res.status}`);
-        }
-
-        const json = await res.json();
-
+        const quickParams = new URLSearchParams({ limit: String(quickLimit), offset: '0', chat: selectedContactId });
+        const quickRes = await fetch(`/api/messages?${quickParams.toString()}`);
         if (cancelled) return;
 
-        if (json.ok && Array.isArray(json.data?.messages)) {
-          setServerMessages(json.data.messages as WeChatMessage[]);
-        } else {
-          const errMsg = json.error || 'CLI returned no data';
-          console.warn(`[ContentArea] No messages for contact "${contact.name}" (id: ${selectedContactId}):`, errMsg);
-          setFetchError(errMsg);
-          setServerMessages(null);
+        if (quickRes.ok) {
+          const quickJson = await quickRes.json();
+          if (cancelled) return;
+
+          if (quickJson.ok && Array.isArray(quickJson.data?.messages)) {
+            const quickMsgs = quickJson.data.messages as WeChatMessage[];
+            // Show quick results immediately
+            setServerMessages(quickMsgs);
+            setIsLoading(false);
+
+            // Phase 2: Background fetch for full dataset if quick results were truncated
+            if (quickMsgs.length >= quickLimit && maxLimit > quickLimit) {
+              const fullParams = new URLSearchParams({ limit: String(maxLimit), offset: '0', chat: selectedContactId });
+              const fullRes = await fetch(`/api/messages?${fullParams.toString()}`);
+              if (cancelled) return;
+
+              if (fullRes.ok) {
+                const fullJson = await fullRes.json();
+                if (cancelled) return;
+
+                if (fullJson.ok && Array.isArray(fullJson.data?.messages)) {
+                  const fullMsgs = fullJson.data.messages as WeChatMessage[];
+                  setServerMessages(fullMsgs);
+                  setCachedMessages(selectedContactId, fullMsgs);
+                  return; // Skip the finally setIsLoading(false) since already set
+                }
+              }
+              // Full fetch failed or cancelled — quick results are still shown, cache them
+              setCachedMessages(selectedContactId, quickMsgs);
+            } else {
+              // Quick results are the full set
+              setCachedMessages(selectedContactId, quickMsgs);
+            }
+            return;
+          }
         }
+
+        // Quick fetch failed — try with full limit as fallback
+        const errMsg = quickRes.ok ? (await quickRes.json().catch(() => null))?.error || 'CLI returned no data' : `Server returned ${quickRes.status}`;
+        console.warn(`[ContentArea] Quick fetch failed for "${contact.name}":`, errMsg);
+
+        // Try full fetch as fallback
+        const fullParams = new URLSearchParams({ limit: String(maxLimit), offset: '0', chat: selectedContactId });
+        const fullRes = await fetch(`/api/messages?${fullParams.toString()}`);
+        if (cancelled) return;
+
+        if (fullRes.ok) {
+          const fullJson = await fullRes.json();
+          if (cancelled) return;
+
+          if (fullJson.ok && Array.isArray(fullJson.data?.messages)) {
+            const msgs = fullJson.data.messages as WeChatMessage[];
+            setServerMessages(msgs);
+            setCachedMessages(selectedContactId, msgs);
+            setFetchError(null);
+            return;
+          }
+        }
+
+        setFetchError(errMsg);
+        setServerMessages(null);
       } catch (err) {
         if (!cancelled) {
           console.error(`[ContentArea] Failed to fetch messages for "${contact.name}":`, err);
@@ -80,7 +196,7 @@ export function ContentArea() {
 
     fetchMessages();
     return () => { cancelled = true; };
-  }, [selectedContactId, contacts, refreshKey]);
+  }, [selectedContactId, refreshKey]);
 
   // Fetch messages for contact type view
   useEffect(() => {
@@ -90,7 +206,7 @@ export function ContentArea() {
       return;
     }
 
-    const typedContacts = contacts.filter(c => c.isSubscribed && c.type === selectedContactType);
+    const typedContacts = contactsRef.current.filter(c => c.isSubscribed && c.type === selectedContactType);
     if (typedContacts.length === 0) {
       setTypeMessages(null);
       setTypeFetchError(null);
@@ -135,17 +251,17 @@ export function ContentArea() {
 
     fetchTypeMessages();
     return () => { cancelled = true; };
-  }, [selectedContactType, contacts, typeRefreshKey]);
+  }, [selectedContactType, typeRefreshKey]);
 
   const filteredMessages = useMemo(() => {
     if (!selectedContactId) return [];
-    const contact = contacts.find(c => c.id === selectedContactId);
+    const contact = contactsRef.current.find(c => c.id === selectedContactId);
     if (!contact) return [];
     // Use server messages if available, otherwise fall back to store messages
     const source = serverMessages ?? messages;
     // Server messages use display name as contactId, store messages use WeChat username
     return source.filter(m => m.contactId === contact.name || m.contactId === selectedContactId);
-  }, [selectedContactId, messages, serverMessages, contacts]);
+  }, [selectedContactId, messages, serverMessages]);
 
   // Build content based on current state
   // NOTE: parent <section> already has flex-1 min-h-0 flex flex-col overflow-hidden

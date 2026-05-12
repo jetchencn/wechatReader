@@ -115,6 +115,22 @@ export function MessageTable({ messages, title, icon, searchPlaceholder, showFil
     return '未知来源';
   };
 
+  // Build a contactId -> name map for O(1) lookups in useMemo
+  const contactNameMap = useMemo(() => {
+    const map = new Map<string, string>();
+    for (const c of contacts) {
+      map.set(c.id, c.name);
+    }
+    return map;
+  }, [contacts]);
+
+  const getContactNameFast = (contactId: string): string => {
+    const name = contactNameMap.get(contactId);
+    if (name) return name;
+    if (contactId) return contactId;
+    return '未知来源';
+  };
+
   const { results, filterOptions, totalCount } = useMemo(() => {
     let filtered = messages;
 
@@ -124,7 +140,7 @@ export function MessageTable({ messages, title, icon, searchPlaceholder, showFil
       filtered = filtered.filter(m => 
         (m.content && m.content.toLowerCase().includes(q)) || 
         (m.senderName && m.senderName.toLowerCase().includes(q)) ||
-        getContactName(m.contactId).toLowerCase().includes(q)
+        getContactNameFast(m.contactId).toLowerCase().includes(q)
       );
     }
 
@@ -135,7 +151,7 @@ export function MessageTable({ messages, title, icon, searchPlaceholder, showFil
     const groupsSet = new Set<string>();
 
     filtered.forEach(m => {
-      contactsSet.add(getContactName(m.contactId));
+      contactsSet.add(getContactNameFast(m.contactId));
       contentTypesSet.add(
         m.contentType === 'text' ? '文本' : 
         m.contentType === 'image' ? '图片' : 
@@ -151,7 +167,7 @@ export function MessageTable({ messages, title, icon, searchPlaceholder, showFil
 
     // Dynamic filters
     if (selectedContacts.size > 0) {
-      filtered = filtered.filter(m => selectedContacts.has(getContactName(m.contactId)));
+      filtered = filtered.filter(m => selectedContacts.has(getContactNameFast(m.contactId)));
     }
     if (selectedContentTypes.size > 0) {
       filtered = filtered.filter(m => {
@@ -185,7 +201,7 @@ export function MessageTable({ messages, title, icon, searchPlaceholder, showFil
       },
       totalCount: filtered.length,
     };
-  }, [messages, searchQuery, contacts, selectedContacts, selectedContentTypes, selectedSenders, selectedGroups]);
+  }, [messages, searchQuery, contactNameMap, selectedContacts, selectedContentTypes, selectedSenders, selectedGroups]);
 
   // Paginate results if enabled
   const pagedResults = useMemo(() => {
@@ -461,7 +477,27 @@ export function MessageTable({ messages, title, icon, searchPlaceholder, showFil
                     {msg.contentType === 'file' ? (
                       <div className="flex items-center text-[#18181B] font-medium"><FileText className="w-4 h-4 mr-1.5 text-[#A1A1AA]"/> {msg.content}</div>
                     ) : msg.contentType === 'image' ? (
-                      <span className="text-[#A1A1AA]">[图片]</span>
+                      msg.metadata?.filePath && !msg.metadata.filePath.startsWith('img:') ? (
+                        <div className="flex items-center gap-2 cursor-zoom-in" onClick={(e) => { e.stopPropagation(); setPreviewImage(msg.metadata?.filePath || null); }}>
+                          <img 
+                            src={`/api/file?path=${encodeURIComponent(msg.metadata.filePath)}`}
+                            alt="缩略图"
+                            className="w-10 h-10 object-cover rounded border border-[#E4E4E7] bg-gray-50"
+                            onError={(e) => {
+                              const target = e.target as HTMLImageElement;
+                              target.style.display = 'none';
+                              const parent = target.parentElement;
+                              if (parent) {
+                                parent.className = 'flex items-center gap-0';
+                                parent.innerHTML = '<span class="text-[#A1A1AA]">[图片]</span>';
+                              }
+                            }}
+                          />
+                          <span className="text-[#71717A] text-xs truncate max-w-[200px]">查看图片</span>
+                        </div>
+                      ) : (
+                        <span className="text-[#A1A1AA]">[图片]</span>
+                      )
                     ) : msg.contentType === 'voice' ? (
                       <span className="text-[#A1A1AA]">[声音时长: {msg.metadata?.duration || 0}s]</span>
                     ) : msg.contentType === 'article' ? (

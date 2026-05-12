@@ -5,6 +5,7 @@ import path from "path";
 import { fileURLToPath } from 'url';
 import { spawnSync } from 'child_process';
 import fs from 'fs';
+import crypto from 'crypto';
 import { getDb, saveSubscriptions, loadSubscriptions, getSubscriptionIds } from './server/db.js';
 
 const __filename = fileURLToPath(import.meta.url);
@@ -95,18 +96,131 @@ function decodeXmlEntities(str: string): string {
     .replace(/&apos;/g, "'");
 }
 
+// ---------------------------------------------------------------------------
+// WeChat V2 encrypted image format constants
+// ---------------------------------------------------------------------------
+const V2_MAGIC_FULL = Buffer.from([0x07, 0x08, 0x56, 0x32, 0x08, 0x07]); // \x07\x08V2\x08\x07
+const V2_AES_KEY = Buffer.from('35a5a4e22c196bde', 'utf8'); // 16-byte AES-128-ECB key
+const V2_XOR_KEY = 0x11;
+
+/**
+ * Detect image MIME type from a raw (decrypted) header buffer.
+ * Supports standard image formats and WeChat-specific wxgf (HEVC) format.
+ */
+function detectImageMimeFromHeader(header: Buffer): string | null {
+  if (header.length < 4) return null;
+  // JPEG
+  if (header[0] === 0xFF && header[1] === 0xD8 && header[2] === 0xFF) return 'image/jpeg';
+  // PNG
+  if (header[0] === 0x89 && header[1] === 0x50 && header[2] === 0x4E && header[3] === 0x47) return 'image/png';
+  // GIF
+  if (header[0] === 0x47 && header[1] === 0x49 && header[2] === 0x46 && header[3] === 0x38) return 'image/gif';
+  // BMP
+  if (header[0] === 0x42 && header[1] === 0x4D) return 'image/bmp';
+  // WebP: RIFF....WEBP
+  if (header[0] === 0x52 && header[1] === 0x49 && header[2] === 0x46 && header[3] === 0x46
+      && header.length >= 12 && header[8] === 0x57 && header[9] === 0x45 && header[10] === 0x42 && header[11] === 0x50) {
+    return 'image/webp';
+  }
+  // WeChat wxgf (HEVC) format: "wxgf" magic at start
+  if (header[0] === 0x77 && header[1] === 0x78 && header[2] === 0x67 && header[3] === 0x66) {
+    return 'image/wxgf';
+  }
+  return null;
+}
+
+/**
+ * Remove PKCS7 padding from a decrypted AES block.
+ */
+function pkcs7Unpad(buf: Buffer): Buffer {
+  if (buf.length === 0) return buf;
+  const padLen = buf[buf.length - 1];
+  if (padLen < 1 || padLen > 16) return buf;
+  for (let i = buf.length - padLen; i < buf.length; i++) {
+    if (buf[i] !== padLen) return buf; // invalid padding, return as-is
+  }
+  return buf.subarray(0, buf.length - padLen);
+}
+
+/**
+ * Decrypt a WeChat V2 encrypted image.
+ * V2 format: [6-byte magic][4-byte aes_size][4-byte xor_size][1-byte unknown][AES-ECB data][raw data][XOR data]
+ *
+ * Python alignment: aligned_aes_size -= ~(~aligned_aes_size % 16)
+ * This rounds up to next 16-byte boundary AND adds 16 if already aligned (for PKCS7 padding room).
+ */
+function decryptV2(buf: Buffer): { data: Buffer; mime: string } | null {
+  if (buf.length < 15) return null;
+
+  // Check V2 magic signature
+  if (!V2_MAGIC_FULL.equals(buf.subarray(0, 6))) return null;
+
+  // Read aes_size and xor_size (little-endian uint32)
+  const aesSize = buf.readUInt32LE(6);
+  const xorSize = buf.readUInt32LE(10);
+
+  if (aesSize === 0 || xorSize === 0) return null;
+
+  // Python alignment: aligned_aes_size -= ~(~aligned_aes_size % 16)
+  // In Python: ~x = -(x+1), % always returns non-negative for positive divisor
+  // Result: round up to next 16 boundary, and if already aligned, add 16 (for PKCS7 padding)
+  const pyNot = -aesSize - 1;
+  const pyMod = ((pyNot % 16) + 16) % 16;  // simulate Python's always-nonnegative modulo
+  const pyNotMod = -pyMod - 1;
+  const alignedAesSize = aesSize - pyNotMod;
+
+  const dataOffset = 15;
+  if (dataOffset + alignedAesSize > buf.length) return null;
+
+  // Decrypt AES-ECB portion (disable auto-padding, we handle PKCS7 manually)
+  const aesData = buf.subarray(dataOffset, dataOffset + alignedAesSize);
+  let decAes: Buffer;
+  try {
+    const decipher = crypto.createDecipheriv('aes-128-ecb', V2_AES_KEY, null);
+    decipher.setAutoPadding(false);
+    const decRaw = Buffer.concat([decipher.update(aesData), decipher.final()]);
+    decAes = pkcs7Unpad(decRaw);
+  } catch {
+    return null;
+  }
+
+  // Extract raw (unencrypted) middle portion
+  let offset = dataOffset + alignedAesSize;
+  const rawEnd = buf.length - xorSize;
+  const rawData = offset < rawEnd ? buf.subarray(offset, rawEnd) : Buffer.alloc(0);
+
+  // Decrypt XOR-encrypted tail portion
+  offset = rawEnd;
+  const xorData = buf.subarray(offset);
+  const decXor = Buffer.alloc(xorData.length);
+  for (let i = 0; i < xorData.length; i++) {
+    decXor[i] = xorData[i] ^ V2_XOR_KEY;
+  }
+
+  // Combine all parts
+  const decrypted = Buffer.concat([decAes, rawData, decXor]);
+
+  // Detect format from decrypted header
+  const mime = detectImageMimeFromHeader(decrypted.subarray(0, Math.min(16, decrypted.length)));
+  if (!mime) return null;
+
+  return { data: decrypted, mime };
+}
+
 /**
  * Decode a WeChat .dat image file.
- * WeChat XORs each byte with a key derived from the first byte.
- *
- * Multiple strategies are tried in order:
- * 1. Derive key from first byte + expected magic bytes (JPEG/PNG/GIF/BMP/WebP)
- * 2. Try common known WeChat XOR keys (0x38, 0xAB, 0xAC, etc.)
- * 3. Brute-force search for any key that produces a valid image header
- * 4. Try XOR with first byte itself (some versions use this)
+ * Supports two encryption formats:
+ * 1. V2 format: AES-ECB + XOR hybrid encryption (magic: \x07\x08V2\x08\x07)
+ * 2. Legacy XOR format: single-byte XOR of entire file
  */
 function decodeWechatDat(buf: Buffer): { data: Buffer; mime: string } | null {
   if (buf.length < 10) return null;
+
+  // Try V2 decryption first (newer WeChat versions)
+  const v2Result = decryptV2(buf);
+  if (v2Result) return v2Result;
+
+  // Fall back to legacy XOR decryption
   const firstByte = buf[0];
 
   // Helper: try to find a valid XOR key by checking the decoded header
@@ -122,11 +236,9 @@ function decodeWechatDat(buf: Buffer): { data: Buffer; mime: string } | null {
 
     // JPEG: FF D8 FF E0/E1/DB/C0/C4/FE...
     if (b0 === 0xFF && b1 === 0xD8 && b2 === 0xFF) {
-      // Verify SOF marker is reasonable (E0-E2, DB, C0-C4, FE)
       if (b3 >= 0xE0 && b3 <= 0xEF || b3 === 0xDB || b3 >= 0xC0 && b3 <= 0xC4 || b3 === 0xFE) {
         return { mime: 'image/jpeg' };
       }
-      // Even if SOF is unusual, FF D8 FF is very strong JPEG indicator
       return { mime: 'image/jpeg' };
     }
     // PNG: 89 50 4E 47 0D 0A 1A 0A
@@ -134,7 +246,6 @@ function decodeWechatDat(buf: Buffer): { data: Buffer; mime: string } | null {
         && b4 === 0x0D && b5 === 0x0A && b6 === 0x1A && b7 === 0x0A) {
       return { mime: 'image/png' };
     }
-    // PNG with fewer bytes verified (more lenient)
     if (b0 === 0x89 && b1 === 0x50 && b2 === 0x4E && b3 === 0x47) {
       return { mime: 'image/png' };
     }
@@ -152,7 +263,6 @@ function decodeWechatDat(buf: Buffer): { data: Buffer; mime: string } | null {
     }
     // WebP: 52 49 46 46 ... 57 45 42 50
     if (b0 === 0x52 && b1 === 0x49 && b2 === 0x46 && b3 === 0x46) {
-      // Verify WEBP marker at offset 8
       const w0 = buf[8] ^ key;
       const w1 = buf[9] ^ key;
       const w2 = buf[10] ^ key;
@@ -267,6 +377,100 @@ async function startServer() {
   app.use(express.json());
 
   // -----------------------------------------------------------------------
+  // API: resolve image by local_id
+  // Queries CLI for raw message content, extracts md5, finds .dat file
+  // -----------------------------------------------------------------------
+  app.get("/api/image", async (req, res) => {
+    const localId = req.query.local_id as string;
+    const chatName = req.query.chat as string;
+    if (!localId) {
+      res.status(400).json({ ok: false, error: 'local_id parameter required' });
+      return;
+    }
+
+    // Try to find image via CLI media resolution first
+    if (chatName) {
+      const cliArgs = ['history', chatName, '--limit', '500', '--msg-type', 'image', '--media', '--format', 'json'];
+      const result = runCli(cliArgs, 30000);
+      if (result.exitCode === 0) {
+        try {
+          const parsed = JSON.parse(result.stdout);
+          const messages: string[] = parsed.messages || [];
+          const targetMsg = messages.find((m: string) => m.includes(`local_id=${localId})`));
+          if (targetMsg) {
+            const pathMatch = targetMsg.match(/\[图片\]\s+((?:\/|\.\.\/|\w:\\)[^\s)]+?)(?:\s*\(文件不存在\))?/);
+            if (pathMatch && fs.existsSync(pathMatch[1])) {
+              res.redirect(`/api/file?path=${encodeURIComponent(pathMatch[1])}`);
+              return;
+            }
+          }
+        } catch { /* continue to fallback */ }
+      }
+    }
+
+    // Fallback: scan attach directory for image files by timestamp
+    // Get the message timestamp from search results to narrow down the date
+    const searchResult = runCli(['search', '', '--limit', '500', '--msg-type', 'image', '--format', 'json'], 30000);
+    let datePrefix = '';
+    if (searchResult.exitCode === 0) {
+      try {
+        const parsed = JSON.parse(searchResult.stdout);
+        const messages: string[] = parsed.results || [];
+        const targetMsg = messages.find((m: string) => m.includes(`local_id=${localId})`));
+        if (targetMsg) {
+          const dateMatch = targetMsg.match(/\[(\d{4}-\d{2})-/);
+          if (dateMatch) datePrefix = dateMatch[1];
+        }
+      } catch { /* ignore */ }
+    }
+
+    // Scan the WeChat attach directory for image files
+    const configPath = path.join(process.env.HOME || '/Users/chenshibin', '.wechat-reader', 'config.json');
+    let attachDir = '';
+    try {
+      const config = JSON.parse(fs.readFileSync(configPath, 'utf8'));
+      const wechatBase = path.dirname(config.db_dir);
+      attachDir = path.join(wechatBase, 'msg', 'attach');
+    } catch { /* ignore */ }
+
+    if (!attachDir || !fs.existsSync(attachDir)) {
+      res.status(404).json({ ok: false, error: 'WeChat attach directory not found' });
+      return;
+    }
+
+    // Scan subdirectories for matching date + Img folder
+    try {
+      const subdirs = fs.readdirSync(attachDir);
+      for (const subdir of subdirs) {
+        const dateDir = datePrefix
+          ? path.join(attachDir, subdir, datePrefix, 'Img')
+          : null;
+
+        const dirsToSearch: string[] = [];
+        if (dateDir && fs.existsSync(dateDir)) {
+          dirsToSearch.push(dateDir);
+        }
+
+        for (const imgDir of dirsToSearch) {
+          const files = fs.readdirSync(imgDir).filter(f => f.endsWith('.dat'));
+          // Find the _h.dat (PNG high quality) for the first image we can decode
+          const hdFiles = files.filter(f => f.endsWith('_h.dat'));
+          const thumbFiles = files.filter(f => f.endsWith('_t.dat'));
+          const origFiles = files.filter(f => !f.endsWith('_h.dat') && !f.endsWith('_t.dat') && !f.endsWith('_M.dat'));
+
+          // We can't match by md5 without the raw XML content
+          // But we can try to serve any available image for now
+          // A better approach would be to extract md5 from the message content
+          // For now, return a 404 since we can't determine which file matches
+          break;
+        }
+      }
+    } catch { /* ignore */ }
+
+    res.status(404).json({ ok: false, error: `Image not found for local_id=${localId} (CLI media resolution failed and md5 matching unavailable)` });
+  });
+
+  // -----------------------------------------------------------------------
   // API: serve local image/file for preview
   // -----------------------------------------------------------------------
   app.get("/api/file", (req, res) => {
@@ -290,12 +494,42 @@ async function startServer() {
     // Determine content type from extension
     const ext = path.extname(normalized).toLowerCase();
 
-    // WeChat .dat files need XOR decoding
+    // WeChat .dat files need decoding
     if (ext === '.dat') {
       try {
         const buf = fs.readFileSync(normalized);
         const decoded = decodeWechatDat(buf);
         if (decoded) {
+          // wxgf (HEVC) format cannot be displayed in browser
+          // Try to find _h.dat (PNG) or _t.dat (JPEG) as fallback
+          if (decoded.mime === 'image/wxgf') {
+            const baseWithoutExt = normalized.replace(/\.dat$/, '');
+            const hDat = baseWithoutExt + '_h.dat';
+            const tDat = baseWithoutExt + '_t.dat';
+            let fallbackPath: string | null = null;
+            // Prefer _h.dat (high quality PNG), then _t.dat (thumbnail JPEG)
+            if (fs.existsSync(hDat)) {
+              fallbackPath = hDat;
+            } else if (fs.existsSync(tDat)) {
+              fallbackPath = tDat;
+            }
+            if (fallbackPath) {
+              const fallbackBuf = fs.readFileSync(fallbackPath);
+              const fallbackDecoded = decodeWechatDat(fallbackBuf);
+              if (fallbackDecoded) {
+                res.setHeader('Content-Type', fallbackDecoded.mime);
+                res.setHeader('Cache-Control', 'public, max-age=86400');
+                res.send(fallbackDecoded.data);
+                return;
+              }
+            }
+            // No fallback available — send wxgf as application/octet-stream with a hint
+            res.setHeader('Content-Type', 'application/octet-stream');
+            res.setHeader('Cache-Control', 'public, max-age=86400');
+            res.send(decoded.data);
+            return;
+          }
+
           res.setHeader('Content-Type', decoded.mime);
           res.setHeader('Cache-Control', 'public, max-age=86400');
           res.send(decoded.data);
@@ -337,11 +571,24 @@ async function startServer() {
   });
 
   // -----------------------------------------------------------------------
+  // Contacts cache (in-memory)
+  // -----------------------------------------------------------------------
+  let contactsCache: { data: any; timestamp: number } | null = null;
+  const CONTACTS_CACHE_TTL = 2 * 60 * 1000; // 2 minutes
+
+  // -----------------------------------------------------------------------
   // API: fetch contacts from CLI (merge contacts + sessions)
   // -----------------------------------------------------------------------
   app.get("/api/contacts", (req, res) => {
     const query = (req.query.query as string) || '';
     const limit = (req.query.limit as string) || '5000';
+
+    // Check contacts cache (only for full queries without search filter)
+    if (!query && contactsCache && Date.now() - contactsCache.timestamp < CONTACTS_CACHE_TTL) {
+      console.log('[API /api/contacts] cache hit');
+      res.json(contactsCache.data);
+      return;
+    }
 
     // Fetch contacts
     const contactsArgs = ['contacts', '--limit', limit, '--format', 'json'];
@@ -393,7 +640,14 @@ async function startServer() {
         type: classifyContact(c),
       }));
 
-      res.json({ ok: true, data: classified });
+      const responseData = { ok: true, data: classified };
+
+      // Cache the full contacts list (no query filter)
+      if (!query) {
+        contactsCache = { data: responseData, timestamp: Date.now() };
+      }
+
+      res.json(responseData);
     } catch (e) {
       res.status(500).json({ ok: false, error: 'Failed to parse CLI output: ' + String(e) });
     }
@@ -433,6 +687,17 @@ async function startServer() {
       res.status(500).json({ ok: false, error: String(err) });
     }
   });
+
+  // -----------------------------------------------------------------------
+  // Messages response cache (in-memory, keyed by CLI args)
+  // -----------------------------------------------------------------------
+  const messagesCache = new Map<string, { data: any; timestamp: number }>();
+  const MESSAGES_CACHE_TTL = 2 * 60 * 1000; // 2 minutes
+  const MESSAGES_CACHE_MAX = 30;
+
+  function getMessagesCacheKey(chatNames: string[], limit: string, offset: string, keyword: string, msgType: string, startTime: string, endTime: string): string {
+    return `${chatNames.sort().join(',')}|${limit}|${offset}|${keyword}|${msgType}|${startTime}|${endTime}`;
+  }
 
   // -----------------------------------------------------------------------
   // Unread sessions cache
@@ -483,18 +748,50 @@ async function startServer() {
         chatNames = [req.query.chat];
       }
 
+      // Check messages cache
+      const cacheKey = getMessagesCacheKey(chatNames, limit, offset, keyword, msgType, startTime, endTime);
+      const cached = messagesCache.get(cacheKey);
+      if (cached && Date.now() - cached.timestamp < MESSAGES_CACHE_TTL) {
+        console.log(`[API /api/messages] cache hit for ${cacheKey}`);
+        res.json(cached.data);
+        return;
+      }
+
+      // Evict oldest entries if cache is full
+      if (messagesCache.size >= MESSAGES_CACHE_MAX) {
+        let oldestKey = '';
+        let oldestTime = Infinity;
+        for (const [k, v] of messagesCache) {
+          if (v.timestamp < oldestTime) {
+            oldestTime = v.timestamp;
+            oldestKey = k;
+          }
+        }
+        if (oldestKey) messagesCache.delete(oldestKey);
+      }
+
       // Use empty keyword so CLI uses limit+offset as batch size (no 500 cap)
-      const args = ['search', keyword, '--limit', limit, '--offset', offset, '--format', 'json'];
+      // For single-chat queries without keyword, use `history` command which is more direct
+      const useHistory = chatNames.length === 1 && !keyword;
+      const args: string[] = [];
+      if (useHistory) {
+        args.push('history', chatNames[0], '--limit', limit, '--offset', offset, '--format', 'json');
+      } else {
+        args.push('search', keyword, '--limit', limit, '--offset', offset, '--format', 'json');
+        for (const cn of chatNames) {
+          args.push('--chat', cn);
+        }
+      }
       if (startTime) args.push('--start-time', startTime);
       if (endTime) args.push('--end-time', endTime);
-      for (const cn of chatNames) {
-        args.push('--chat', cn);
-      }
-      if (msgType) args.push('--msg-type', msgType);
+      if (!useHistory && msgType) args.push('--msg-type', msgType);
 
       console.log('[API /api/messages] running CLI:', args.join(' '));
 
-      const result = runCli(args, 120000); // 2 min timeout for large group queries
+      // Adjust timeout: use shorter timeout for small limits
+      const numLimit = parseInt(limit, 10) || 5000;
+      const timeoutMs = numLimit <= 200 ? 30000 : 120000; // 30s for quick fetch, 2min for full
+      const result = runCli(args, timeoutMs);
 
       if (result.exitCode !== 0) {
         console.error('[API /api/messages] CLI failed:', result.stderr);
@@ -523,18 +820,36 @@ async function startServer() {
         metadata?: { url?: string };
       }[] = [];
 
-      if (Array.isArray(parsed.results)) {
-        for (const line of parsed.results) {
+      if (Array.isArray(parsed.results) || Array.isArray(parsed.messages)) {
+        // `search` command outputs `results`, `history` command outputs `messages`
+        // Both are arrays of formatted message strings
+        const lines: string[] = parsed.results || parsed.messages;
+        // For `history` command, get chat display name from parsed output
+        const historyChatName = parsed.chat || '';
+        for (const line of lines) {
           if (typeof line !== 'string') continue;
-          // Parse format:
-          //   Person chat: "[2025-01-15 14:30] [ChatName] message content"
-          //   Group chat:  "[2025-01-15 14:30] [ChatName] SenderName: message content"
-          const match = line.match(/^\[(\d{4}-\d{2}-\d{2} \d{2}:\d{2})\] \[([^\]]+)\]\s*([\s\S]+)$/);
-          if (!match) continue;
+          // Parse format from search command:
+          //   "[2025-01-15 14:30] [ChatName] message content"
+          // Parse format from history command:
+          //   "[2025-01-15 14:30] message content"  (no [ChatName] bracket)
+          const searchMatch = line.match(/^\[(\d{4}-\d{2}-\d{2} \d{2}:\d{2})\] \[([^\]]+)\]\s*([\s\S]+)$/);
+          const historyMatch = line.match(/^\[(\d{4}-\d{2}-\d{2} \d{2}:\d{2})\]\s*([\s\S]+)$/);
+          
+          let timeStr = '';
+          let chatName = '';
+          let rest = '';
 
-          const timeStr = match[1];
-          const chatName = match[2];
-          const rest = match[3];
+          if (searchMatch) {
+            timeStr = searchMatch[1];
+            chatName = searchMatch[2];
+            rest = searchMatch[3];
+          } else if (historyMatch) {
+            timeStr = historyMatch[1];
+            chatName = historyChatName || chatNames[0] || '';
+            rest = historyMatch[2];
+          } else {
+            continue;
+          }
 
           // Parse time as local time (WeChat DB stores local-time-based timestamps)
           // new Date("2025-01-15 14:30") is non-standard; parse manually to ensure local time
@@ -548,7 +863,7 @@ async function startServer() {
           }
           if (isNaN(timestamp)) continue;
 
-          const isGroup = chatName.includes('群') || chatName.includes('group');
+          const isGroup = chatName.includes('群') || chatName.includes('group') || chatNames.some(cn => cn.includes('@chatroom'));
 
           // Extract sender for all chats (CLI now outputs sender for person chats too)
           // Format: "SenderName: message content" or just "message content"
@@ -681,7 +996,7 @@ async function startServer() {
 
       console.log(`[API /api/messages] returned ${messages.length} messages`);
 
-      res.json({
+      const responseData = {
         ok: true,
         data: {
           scope: parsed.scope || '',
@@ -690,7 +1005,12 @@ async function startServer() {
           limit: Number(limit),
           messages: messages,
         },
-      });
+      };
+
+      // Cache the response
+      messagesCache.set(cacheKey, { data: responseData, timestamp: Date.now() });
+
+      res.json(responseData);
     } catch (e) {
       console.error('[API /api/messages] exception:', e);
       res.status(500).json({ ok: false, error: 'Failed to fetch messages: ' + String(e) });

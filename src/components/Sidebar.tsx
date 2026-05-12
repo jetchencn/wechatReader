@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useMemo } from 'react';
 import { useAppStore } from '../store';
 import { ScrollArea } from '@/components/ui/scroll-area';
 import { Button } from '@/components/ui/button';
@@ -7,6 +7,7 @@ import { Input } from '@/components/ui/input';
 import { Contact } from '../types';
 import { formatDistanceToNow } from 'date-fns';
 import { zhCN } from 'date-fns/locale';
+import { prefetchContactMessages } from './ContentArea';
 import { 
   Search, 
   FolderSync, 
@@ -40,13 +41,13 @@ export function Sidebar({ className = '', onToggleCollapse, isCollapsed }: { cla
     setExpandedSections(prev => ({ ...prev, [section]: !prev[section] }));
   };
 
-  const subscribedContacts = contacts.filter(c => c.isSubscribed);
+  const subscribedContacts = useMemo(() => contacts.filter(c => c.isSubscribed), [contacts]);
   
-  const groupedContacts = {
+  const groupedContacts = useMemo(() => ({
     person: subscribedContacts.filter(c => c.type === 'person'),
     group: subscribedContacts.filter(c => c.type === 'group'),
     official_account: subscribedContacts.filter(c => c.type === 'official_account'),
-  };
+  }), [subscribedContacts]);
 
   const renderContactList = (items: Contact[], emptyText: string) => {
     if (!isCollapsed && items.length === 0) {
@@ -61,6 +62,7 @@ export function Sidebar({ className = '', onToggleCollapse, isCollapsed }: { cla
               selectContact(contact.id);
               setShowWizard(false);
             }}
+            onMouseEnter={() => prefetchContactMessages(contact.id)}
             className={cn(
               "flex items-center cursor-pointer group transition-all w-full",
               isCollapsed ? "px-4 py-2 mx-0 my-0.5 rounded-lg" : "px-4 py-2",
