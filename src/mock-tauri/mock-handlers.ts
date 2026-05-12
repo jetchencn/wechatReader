@@ -7,7 +7,6 @@
  */
 
 import type { InitStatus } from './index';
-import { mockContacts, mockMessages, mockArticles, mockViews } from '../lib/mockData';
 
 // ---------------------------------------------------------------------------
 // localStorage 持久化模拟文件系统
@@ -84,9 +83,9 @@ export const mockHandlers: Record<string, (args?: any) => any> = {
   // --- CLI 命令 ---
   run_cli: (args: { args: string[] }) => {
     const cmd = args?.args?.[0];
-    if (cmd === 'sessions') return JSON.stringify({ sessions: [] });
-    if (cmd === 'contacts') return JSON.stringify({ contacts: mockContacts });
-    if (cmd === 'history') return JSON.stringify({ messages: mockMessages });
+    if (cmd === 'sessions') return JSON.stringify([]);
+    if (cmd === 'contacts') return JSON.stringify([]);
+    if (cmd === 'history') return JSON.stringify([]);
     if (cmd === 'favorites') return JSON.stringify({ count: 0, favorites: [] });
     if (cmd === 'unread') return JSON.stringify([]);
     if (cmd === 'new-messages') return JSON.stringify({ first_call: true, messages: [] });
@@ -100,39 +99,10 @@ export const mockHandlers: Record<string, (args?: any) => any> = {
   }),
 
   // --- 微信数据查询 ---
-  get_sessions: (args?: { limit?: number }) => {
-    const sessions = mockContacts.map((c) => ({
-      chat: c.name,
-      username: c.id,
-      is_group: c.type === 'group',
-      unread: 0,
-      last_message: '',
-      msg_type: '文本',
-      timestamp: c.lastMessageTime ?? Date.now(),
-      time: new Date(c.lastMessageTime ?? Date.now()).toLocaleString(),
-    }));
-    return { sessions: sessions.slice(0, args?.limit ?? 20) };
-  },
-  get_history: (args?: { chat_name?: string; limit?: number }) => {
-    const msgs = mockMessages
-      .filter((m) => !args?.chat_name || mockContacts.find((c) => c.id === m.contactId)?.name === args.chat_name)
-      .slice(0, args?.limit ?? 50);
-    return { messages: msgs, count: msgs.length };
-  },
-  search_messages: (args?: { keyword?: string; limit?: number }) => {
-    const kw = (args?.keyword ?? '').toLowerCase();
-    const results = mockMessages
-      .filter((m) => m.content.toLowerCase().includes(kw))
-      .slice(0, args?.limit ?? 20);
-    return { results, count: results.length };
-  },
-  get_contacts: (args?: { query?: string; limit?: number }) => {
-    const q = (args?.query ?? '').toLowerCase();
-    const results = q
-      ? mockContacts.filter((c) => c.name.toLowerCase().includes(q))
-      : mockContacts;
-    return { contacts: results.slice(0, args?.limit ?? 50) };
-  },
+  get_sessions: () => ({ sessions: [] }),
+  get_history: () => ({ messages: [], count: 0 }),
+  search_messages: () => ({ results: [], count: 0 }),
+  get_contacts: () => ({ contacts: [] }),
   get_favorites: () => ({ count: 0, favorites: [] }),
   get_unread: () => [],
   get_new_messages: () => ({ first_call: true, messages: [], unread_count: 0 }),

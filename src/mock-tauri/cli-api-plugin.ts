@@ -313,6 +313,141 @@ async function handleCliApi(req: IncomingMessage, res: ServerResponse): Promise<
         return true;
       }
 
+      // --- 本地文章 API（与 server.ts /api/articles 对齐） ---
+      case 'articles': {
+        const limit = url.searchParams.get('limit') ?? '5000';
+        const query = url.searchParams.get('query') ?? '';
+        const localDir = url.searchParams.get('local_dir') ?? '';
+
+        // If localDir is set, scan the directory for article files
+        if (localDir && existsSync(localDir)) {
+          try {
+            const files = readdirSync(localDir);
+            const articles: {
+              id: string;
+              title: string;
+              digest: string;
+              sourceChat: string;
+              author?: string;
+              publishTime: number;
+              url?: string;
+            }[] = [];
+
+            for (const file of files) {
+              const fullPath = path.join(localDir, file);
+              const stat = statSync(fullPath);
+              if (!stat.isFile()) continue;
+              // Support .html, .md, .txt files
+              const ext = path.extname(file).toLowerCase();
+              if (!['.html', '.md', '.txt', '.json'].includes(ext)) continue;
+
+              const title = path.basename(file, ext);
+              articles.push({
+                id: `local-${file}`,
+                title: title,
+                digest: '',
+                sourceChat: '本地文章',
+                author: '',
+                publishTime: stat.mtimeMs,
+                url: `file://${fullPath}`,
+              });
+            }
+
+            // Apply query filter
+            let filtered = articles;
+            if (query) {
+              const q = query.toLowerCase();
+              filtered = articles.filter(a => a.title.toLowerCase().includes(q));
+            }
+
+            // Apply limit
+            const limited = filtered.slice(0, parseInt(limit, 10));
+
+            sendJson(res, {
+              ok: true,
+              data: { count: limited.length, articles: limited },
+            });
+            return true;
+          } catch (err: unknown) {
+            sendJson(res, { ok: false, error: String(err) }, 500);
+            return true;
+          }
+        }
+
+        // Fallback: use CLI favorites command
+        const args = ['favorites', '--fav-type', 'article', '--limit', limit, '--format', 'json'];
+        if (query) args.push('--query', query);
+        const result = runCli(args);
+        if (result.exitCode !== 0) {
+          sendJson(res, { ok: false, error: result.stderr || 'CLI failed' }, 500);
+          return true;
+        }
+
+        try {
+          const parsed = JSON.parse(result.stdout);
+          const articles: {
+            id: string;
+            title: string;
+            digest: string;
+            sourceChat: string;
+            author?: string;
+            publishTime: number;
+          }[] = [];
+
+          if (Array.isArray(parsed.favorites)) {
+            for (const fav of parsed.favorites) {
+              const summary = fav.summary || '';
+              const separatorIdx = summary.indexOf(' - ');
+              const title = separatorIdx > 0 ? summary.substring(0, separatorIdx) : summary;
+              const digest = separatorIdx > 0 ? summary.substring(separatorIdx + 3) : '';
+
+              articles.push({
+                id: `fav-${fav.id}`,
+                title: title,
+                digest: digest,
+                sourceChat: fav.source_chat || '',
+                author: fav.from || undefined,
+                publishTime: fav.time ? new Date(fav.time).getTime() : 0,
+              });
+            }
+          }
+
+          sendJson(res, {
+            ok: true,
+            data: { count: articles.length, articles: articles },
+          });
+        } catch {
+          sendJson(res, { ok: false, error: 'Failed to parse CLI output' }, 500);
+        }
+        return true;
+      }
+
+      // --- 配置读写（localStorage 持久化） ---
+      case 'config-get': {
+        const key = url.searchParams.get('key') ?? '';
+        if (!key) { sendError(res, '缺少 key 参数', 400); return true; }
+        try {
+          const val = localStorage.getItem(`wechat-reader:config:${key}`);
+          sendJson(res, { ok: true, data: val });
+        } catch {
+          sendJson(res, { ok: true, data: null });
+        }
+        return true;
+      }
+
+      case 'config-set': {
+        if (req.method !== 'POST') { sendError(res, '需要 POST', 405); return true; }
+        const body = JSON.parse(await readBody(req));
+        if (!body.key) { sendError(res, '缺少 key', 400); return true; }
+        try {
+          localStorage.setItem(`wechat-reader:config:${body.key}`, body.value ?? '');
+          sendJson(res, { ok: true });
+        } catch {
+          sendError(res, '保存配置失败', 500);
+        }
+        return true;
+      }
+
       case 'unread': {
         const limit = url.searchParams.get('limit') ?? '50';
         const format = url.searchParams.get('format') ?? 'json';

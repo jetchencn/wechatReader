@@ -1,5 +1,6 @@
 use crate::contacts::get_contact_names;
 use crate::{formatter, messages};
+use chrono::TimeZone;
 use serde_json::Value;
 use std::collections::HashMap;
 
@@ -73,7 +74,8 @@ pub fn run(
                             .or_else(|| sender_name.clone())
                             .unwrap_or_default()
                     } else { String::new() };
-                    let time_str = chrono::DateTime::from_timestamp(ts, 0)
+                    let time_str = chrono::Local.timestamp_opt(ts, 0)
+                        .single()
                         .map(|dt| dt.format("%m-%d %H:%M").to_string())
                         .unwrap_or_default();
                     Some(serde_json::json!({

@@ -1,6 +1,6 @@
-import React, { useMemo, useState } from 'react';
+import React, { useMemo, useState, useEffect } from 'react';
 import { format } from 'date-fns';
-import { FileText, Search, SearchX, Download, Clock, CalendarDays, BookMarked, Paperclip, Filter, Check } from 'lucide-react';
+import { FileText, Search, SearchX, Download, Clock, CalendarDays, BookMarked, Paperclip, Filter, Check, ChevronLeft, ChevronRight } from 'lucide-react';
 import { Input } from '@/components/ui/input';
 import { Button } from '@/components/ui/button';
 import { useAppStore } from '../store';
@@ -20,12 +20,20 @@ import {
 } from '@/components/ui/command';
 import { cn } from '@/lib/utils';
 
+const PAGE_SIZE = 50;
+
 interface MessageTableProps {
   messages: WeChatMessage[];
   title: string | React.ReactNode;
   icon?: React.ReactNode;
   searchPlaceholder?: string;
   showFilters?: boolean;
+  /** When true, pagination is handled internally (search/filters work on full dataset) */
+  enablePagination?: boolean;
+  /** When true, show date (MM-dd) in time column instead of just time */
+  showDate?: boolean;
+  /** When true, hide the contact/chat column */
+  hideContactColumn?: boolean;
 }
 
 function FilterMenu({ title, options, selected, onToggle }: { title: string, options: string[], selected: Set<string>, onToggle: (val: string) => void }) {
@@ -72,7 +80,7 @@ function FilterMenu({ title, options, selected, onToggle }: { title: string, opt
   );
 }
 
-export function MessageTable({ messages, title, icon, searchPlaceholder, showFilters = true }: MessageTableProps) {
+export function MessageTable({ messages, title, icon, searchPlaceholder, showFilters = true, enablePagination = false, showDate = false, hideContactColumn = false }: MessageTableProps) {
   const { contacts } = useAppStore();
   const [searchQuery, setSearchQuery] = useState('');
   const [selectedContacts, setSelectedContacts] = useState<Set<string>>(new Set());
@@ -80,12 +88,18 @@ export function MessageTable({ messages, title, icon, searchPlaceholder, showFil
   const [selectedSenders, setSelectedSenders] = useState<Set<string>>(new Set());
   const [selectedGroups, setSelectedGroups] = useState<Set<string>>(new Set());
   const [showUnreadOnly, setShowUnreadOnly] = useState(false);
+  const [currentPage, setCurrentPage] = useState(0);
 
   const getContactName = (contactId: string) => {
-    return contacts.find(c => c.id === contactId)?.name || '未知来源';
+    // Try lookup by WeChat username (id) first (for mock data)
+    const byId = contacts.find(c => c.id === contactId);
+    if (byId) return byId.name;
+    // For server-fetched messages, contactId is already the display name
+    if (contactId) return contactId;
+    return '未知来源';
   };
 
-  const { results, filterOptions, totalCount, unreadCount } = useMemo(() => {
+  const { results, filterOptions, totalCount, unreadCount, allFilteredCount } = useMemo(() => {
     let filtered = messages;
 
     // Search filter
@@ -145,7 +159,7 @@ export function MessageTable({ messages, title, icon, searchPlaceholder, showFil
       });
     }
 
-    const totalCount = filtered.length;
+    const allFilteredCount = filtered.length;
     const unreadCount = filtered.filter(m => !m.isRead).length;
 
     if (showUnreadOnly) {
@@ -160,10 +174,26 @@ export function MessageTable({ messages, title, icon, searchPlaceholder, showFil
         senders: Array.from(sendersSet).filter(Boolean).sort(),
         groups: Array.from(groupsSet).sort(),
       },
-      totalCount,
-      unreadCount
+      totalCount: filtered.length,
+      unreadCount,
+      allFilteredCount
     };
   }, [messages, searchQuery, contacts, selectedContacts, selectedContentTypes, selectedSenders, selectedGroups, showUnreadOnly]);
+
+  // Paginate results if enabled
+  const pagedResults = useMemo(() => {
+    if (!enablePagination) return results;
+    const start = currentPage * PAGE_SIZE;
+    return results.slice(start, start + PAGE_SIZE);
+  }, [results, currentPage, enablePagination]);
+
+  const totalPages = Math.max(1, Math.ceil(results.length / PAGE_SIZE));
+  const hasMore = (currentPage + 1) * PAGE_SIZE < results.length;
+
+  // Reset page when filters/search change
+  useEffect(() => {
+    setCurrentPage(0);
+  }, [searchQuery, selectedContacts, selectedContentTypes, selectedSenders, selectedGroups, showUnreadOnly]);
 
   const toggleFilter = (set: Set<string>, value: string, setter: React.Dispatch<React.SetStateAction<Set<string>>>) => {
     const next = new Set(set);
@@ -208,8 +238,9 @@ export function MessageTable({ messages, title, icon, searchPlaceholder, showFil
   };
 
   return (
-    <div className="flex flex-col h-full bg-white">
-      <div className="px-6 py-4 bg-white border-b border-[#E4E4E7] z-10 shrink-0 flex items-center justify-between" style={{ height: '69px' }}>
+    <div className="flex flex-col flex-1 min-h-0 bg-white overflow-hidden">
+      {/* Fixed top: title bar */}
+      <div className="px-6 py-4 bg-white border-b border-[#E4E4E7] shrink-0 flex items-center justify-between" style={{ height: '69px' }}>
         <div className="flex items-center">
           <h2 className="text-xl font-semibold tracking-tight text-[#18181B] flex items-center">
             {icon && <span className="mr-3 text-[#71717A] flex items-center justify-center">{icon}</span>}
@@ -237,36 +268,38 @@ export function MessageTable({ messages, title, icon, searchPlaceholder, showFil
         </div>
       </div>
 
-      <div className="flex-1 overflow-y-auto">
-        <div className="w-full">
-          <div className="sticky top-0 z-20 bg-white p-3 flex items-center justify-between border-b border-[#E4E4E7]">
-            <div className="relative w-80">
-              <Search className="absolute left-3 top-2.5 h-4 w-4 text-[#A1A1AA]" />
-              <Input 
-                placeholder={searchPlaceholder || "搜索归档记录..."}
-                className="pl-9 h-9 text-sm bg-white border border-[#E4E4E7] ring-0 focus-visible:ring-0 focus-visible:border-black rounded-none transition-all"
-                value={searchQuery}
-                onChange={(e) => setSearchQuery(e.target.value)}
-              />
-            </div>
-            <Button onClick={handleExportCSV} variant="outline" size="sm" className="hidden sm:flex border border-[#E4E4E7] rounded-none hover:bg-[#F4F4F5] text-[#18181B] bg-white h-9 text-xs">
-              <Download className="w-3 h-3 mr-1.5" />
-              导出
-            </Button>
-          </div>
+      {/* Fixed top: search bar */}
+      <div className="shrink-0 bg-white px-3 py-3 flex items-center justify-between border-b border-[#E4E4E7]">
+        <div className="relative w-80">
+          <Search className="absolute left-3 top-2.5 h-4 w-4 text-[#A1A1AA]" />
+          <Input 
+            placeholder={searchPlaceholder || "搜索归档记录..."}
+            className="pl-9 h-9 text-sm bg-white border border-[#E4E4E7] ring-0 focus-visible:ring-0 focus-visible:border-black rounded-none transition-all"
+            value={searchQuery}
+            onChange={(e) => setSearchQuery(e.target.value)}
+          />
+        </div>
+        <Button onClick={handleExportCSV} variant="outline" size="sm" className="hidden sm:flex border border-[#E4E4E7] rounded-none hover:bg-[#F4F4F5] text-[#18181B] bg-white h-9 text-xs">
+          <Download className="w-3 h-3 mr-1.5" />
+          导出
+        </Button>
+      </div>
 
-          {results.length === 0 ? (
-            <div className="flex flex-col items-center justify-center py-20 text-[#A1A1AA] space-y-4">
-              <div className="w-16 h-16 bg-[#F4F4F5] rounded-xl border border-dashed border-[#D4D4D8] flex items-center justify-center">
-                <SearchX className="w-8 h-8 text-[#A1A1AA]" />
-              </div>
-              <p className="text-sm font-medium">没有匹配的归档记录</p>
+      {/* Scrollable table body */}
+      <div className="flex-1 min-h-0 overflow-y-auto">
+        {results.length === 0 ? (
+          <div className="flex flex-col items-center justify-center py-20 text-[#A1A1AA] space-y-4">
+            <div className="w-16 h-16 bg-[#F4F4F5] rounded-xl border border-dashed border-[#D4D4D8] flex items-center justify-center">
+              <SearchX className="w-8 h-8 text-[#A1A1AA]" />
             </div>
-          ) : (
-            <table className="w-full text-sm text-left border-collapse">
-              <thead className="bg-[#F4F4F5] text-[#71717A] text-xs uppercase font-semibold border-b border-[#E4E4E7] sticky top-[60px] z-10 transition-all">
-                <tr>
-                  <th className="px-6 py-3 font-medium">时间</th>
+            <p className="text-sm font-medium">没有匹配的归档记录</p>
+          </div>
+        ) : (
+          <table className="w-full text-sm text-left border-collapse">
+            <thead className="bg-[#F4F4F5] text-[#71717A] text-xs uppercase font-semibold border-b border-[#E4E4E7] sticky top-0 z-20">
+              <tr>
+                <th className="px-6 py-3 font-medium">时间</th>
+                {!hideContactColumn && (
                   <th className="px-6 py-3 font-medium">
                     <FilterMenu 
                       title="会话" 
@@ -275,23 +308,25 @@ export function MessageTable({ messages, title, icon, searchPlaceholder, showFil
                       onToggle={(c) => toggleFilter(selectedContacts, c, setSelectedContacts)} 
                     />
                   </th>
-                  <th className="px-6 py-3 font-medium">
-                    <FilterMenu 
-                      title="类型" 
-                      options={filterOptions.contentTypes} 
-                      selected={selectedContentTypes} 
-                      onToggle={(c) => toggleFilter(selectedContentTypes, c, setSelectedContentTypes)} 
-                    />
-                  </th>
-                  <th className="px-6 py-3 font-medium">
-                    <FilterMenu 
-                      title="发送者" 
-                      options={filterOptions.senders} 
-                      selected={selectedSenders} 
-                      onToggle={(s) => toggleFilter(selectedSenders, s, setSelectedSenders)} 
-                    />
-                  </th>
-                  <th className="px-6 py-3 font-medium">内容</th>
+                )}
+                <th className="px-6 py-3 font-medium">
+                  <FilterMenu 
+                    title="类型" 
+                    options={filterOptions.contentTypes} 
+                    selected={selectedContentTypes} 
+                    onToggle={(c) => toggleFilter(selectedContentTypes, c, setSelectedContentTypes)} 
+                  />
+                </th>
+                <th className="px-6 py-3 font-medium">
+                  <FilterMenu 
+                    title="发送者" 
+                    options={filterOptions.senders} 
+                    selected={selectedSenders} 
+                    onToggle={(s) => toggleFilter(selectedSenders, s, setSelectedSenders)} 
+                  />
+                </th>
+                <th className="px-6 py-3 font-medium">内容</th>
+                {!hideContactColumn && (
                   <th className="px-6 py-3 font-medium">
                     <FilterMenu 
                       title="归属" 
@@ -300,63 +335,90 @@ export function MessageTable({ messages, title, icon, searchPlaceholder, showFil
                       onToggle={(g) => toggleFilter(selectedGroups, g, setSelectedGroups)} 
                     />
                   </th>
-                  <th className="px-6 py-3 font-medium">链接</th>
-                </tr>
-              </thead>
-              <tbody className="divide-y divide-[#E4E4E7] bg-white">
-                {results.map((msg) => (
-                  <tr key={msg.id} className={`hover:bg-[#F4F4F5] transition-colors cursor-pointer group`}>
-                    <td className="px-6 py-4 text-xs whitespace-nowrap font-mono">
-                      {!msg.isRead && (
-                        <span className="font-bold text-blue-500 mr-1 text-base leading-none relative top-[-1px]">.</span>
-                      )}
-                      <span className={!msg.isRead ? 'text-[#18181B] font-bold' : 'text-[#A1A1AA]'}>
-                        {format(msg.timestamp, 'HH:mm:ss')}
-                      </span>
-                    </td>
-                    <td className={`px-6 py-4 whitespace-nowrap ${!msg.isRead ? 'font-bold text-[#18181B]' : 'font-medium text-[#18181B]'}`}>
+                )}
+                <th className="px-6 py-3 font-medium">链接</th>
+              </tr>
+            </thead>
+            <tbody className="divide-y divide-[#E4E4E7] bg-white">
+              {(enablePagination ? pagedResults : results).map((msg) => (
+                <tr key={msg.id} className={`hover:bg-[#F4F4F5] transition-colors cursor-pointer group`}>
+                  <td className="px-6 py-4 text-xs whitespace-nowrap font-mono">
+                    {!msg.isRead && (
+                      <span className="font-bold text-blue-500 mr-1 text-base leading-none relative top-[-1px]">.</span>
+                    )}
+                    <span className={!msg.isRead ? 'text-[#18181B] font-bold' : 'text-[#A1A1AA]'}>
+                      {showDate ? format(msg.timestamp, 'MM-dd HH:mm') : format(msg.timestamp, 'HH:mm:ss')}
+                    </span>
+                  </td>
+                  {!hideContactColumn && (
+                    <td className={`px-6 py-4 whitespace-nowrap ${!msg.isRead ? 'text-[#18181B]' : 'text-[#18181B]'}`}>
                       {getContactName(msg.contactId)}
                     </td>
-                    <td className="px-6 py-4 text-[#52525B] whitespace-nowrap">
-                      {msg.contentType === 'text' ? '文本' : 
-                       msg.contentType === 'image' ? '图片' : 
-                       msg.contentType === 'voice' ? '声音' : 
-                       msg.contentType === 'file' ? '文件' : 
-                       msg.contentType === 'video' ? '视频' : 
-                       msg.contentType === 'article' ? '文章' : 
-                       msg.contentType === 'link' ? '链接' : msg.contentType}
-                    </td>
-                    <td className="px-6 py-4 text-[#52525B] whitespace-nowrap">
-                      {msg.senderName || (msg.senderId === 'me' ? '我' : '系统')}
-                    </td>
-                    <td className="px-6 py-4 text-[#52525B] max-w-[300px] truncate group-hover:text-black transition-colors" title={msg.content}>
-                      {msg.contentType === 'file' ? (
-                        <div className="flex items-center text-[#18181B] font-medium"><FileText className="w-4 h-4 mr-1.5 text-[#A1A1AA]"/> {msg.content}</div>
-                      ) : msg.contentType === 'image' ? (
-                        <span className="text-[#A1A1AA]">[图片]</span>
-                      ) : msg.contentType === 'voice' ? (
-                        <span className="text-[#A1A1AA]">[声音时长: {msg.metadata?.duration || 0}s]</span>
-                      ) : (
-                        <span className={!msg.isRead ? 'font-medium text-[#18181B]' : ''}>{msg.content}</span>
-                      )}
-                    </td>
+                  )}
+                  <td className="px-6 py-4 text-[#52525B] whitespace-nowrap">
+                    {msg.contentType === 'text' ? '文本' : 
+                     msg.contentType === 'image' ? '图片' : 
+                     msg.contentType === 'voice' ? '声音' : 
+                     msg.contentType === 'file' ? '文件' : 
+                     msg.contentType === 'video' ? '视频' : 
+                     msg.contentType === 'article' ? '文章' : 
+                     msg.contentType === 'link' ? '链接' : msg.contentType}
+                  </td>
+                  <td className="px-6 py-4 text-[#52525B] whitespace-nowrap">
+                    {msg.senderName || (msg.senderId === 'me' ? '我' : '系统')}
+                  </td>
+                  <td className="px-6 py-4 text-[#52525B] max-w-[300px] truncate group-hover:text-black transition-colors" title={msg.content}>
+                    {msg.contentType === 'file' ? (
+                      <div className="flex items-center text-[#18181B] font-medium"><FileText className="w-4 h-4 mr-1.5 text-[#A1A1AA]"/> {msg.content}</div>
+                    ) : msg.contentType === 'image' ? (
+                      <span className="text-[#A1A1AA]">[图片]</span>
+                    ) : msg.contentType === 'voice' ? (
+                      <span className="text-[#A1A1AA]">[声音时长: {msg.metadata?.duration || 0}s]</span>
+                    ) : (
+                      <span className={!msg.isRead ? 'font-medium text-[#18181B]' : ''}>{msg.content}</span>
+                    )}
+                  </td>
+                  {!hideContactColumn && (
                     <td className="px-6 py-4 text-[#52525B] whitespace-nowrap">
                       {msg.type === 'person' ? '联系人' : msg.type === 'group' ? '微信群' : '公众号'}
                     </td>
-                    <td className="px-6 py-4 text-blue-600 hover:text-blue-800 whitespace-nowrap truncate max-w-[150px]">
-                      {msg.type === 'official_account' && msg.metadata?.url ? (
-                        <a href={msg.metadata.url} target="_blank" rel="noopener noreferrer" className="hover:underline" onClick={(e) => e.stopPropagation()}>
-                          查看文章
-                        </a>
-                      ) : '-'}
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          )}
-        </div>
+                  )}
+                  <td className="px-6 py-4 text-blue-600 hover:text-blue-800 whitespace-nowrap truncate max-w-[150px]">
+                    {msg.type === 'official_account' && msg.metadata?.url ? (
+                      <a href={msg.metadata.url} target="_blank" rel="noopener noreferrer" className="hover:underline" onClick={(e) => e.stopPropagation()}>
+                        查看文章
+                      </a>
+                    ) : '-'}
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        )}
       </div>
+
+      {/* Fixed bottom: pagination */}
+      {enablePagination && results.length > PAGE_SIZE && (
+        <div className="shrink-0 flex items-center justify-center gap-3 py-3 border-t border-[#E4E4E7] bg-white">
+          <button
+            onClick={() => setCurrentPage(p => Math.max(0, p - 1))}
+            disabled={currentPage === 0}
+            className={`p-1.5 rounded transition-colors ${currentPage === 0 ? 'text-[#D4D4D8] cursor-not-allowed' : 'text-[#52525B] hover:bg-[#F4F4F5]'}`}
+          >
+            <ChevronLeft className="w-4 h-4" />
+          </button>
+          <span className="text-xs text-[#71717A] font-medium">
+            第 {currentPage + 1}/{totalPages} 页（共 {results.length} 条）
+          </span>
+          <button
+            onClick={() => setCurrentPage(p => p + 1)}
+            disabled={!hasMore}
+            className={`p-1.5 rounded transition-colors ${!hasMore ? 'text-[#D4D4D8] cursor-not-allowed' : 'text-[#52525B] hover:bg-[#F4F4F5]'}`}
+          >
+            <ChevronRight className="w-4 h-4" />
+          </button>
+        </div>
+      )}
     </div>
   );
 }

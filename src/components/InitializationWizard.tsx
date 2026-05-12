@@ -174,7 +174,7 @@ export function InitializationWizard({ onSuccess }: { onSuccess?: () => void }) 
                 onClick={onSuccess}
                 className="bg-black text-white hover:bg-[#27272A] rounded-xl px-8 h-12 shadow-md flex items-center gap-2.5 font-bold transition-all hover:scale-[1.02] active:scale-[0.98]"
               >
-                前往订阅设置
+                前往订阅
                 <ArrowRight className="w-5 h-5" />
               </Button>
             )}

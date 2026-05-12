@@ -23,7 +23,7 @@ import {
 } from 'lucide-react';
 
 export function Sidebar({ className = '' }: { className?: string }) {
-  const { contacts, views, selectedContactId, selectedViewId, selectContact, selectView, searchQuery, setSearchQuery, setShowWizard } = useAppStore();
+  const { contacts, views, selectedContactId, selectedViewId, selectedContactType, selectContact, selectView, selectContactType, searchQuery, setSearchQuery, setShowWizard, setSettingsTab } = useAppStore();
   
   const [expandedSections, setExpandedSections] = useState({
     smart: true,
@@ -60,7 +60,18 @@ export function Sidebar({ className = '' }: { className?: string }) {
           selectedContactId === contact.id ? 'bg-[#F4F4F5] text-[#18181B] font-medium border-r-2 border-[#18181B]' : 'text-[#71717A] hover:bg-[#FAFAFA]'
         }`}
       >
-        <div className="w-6 h-6 rounded bg-[#E4E4E7] flex items-center justify-center text-xs font-bold mr-3 shrink-0 text-[#18181B]">
+        {contact.avatar ? (
+          <img
+            src={contact.avatar}
+            alt={contact.name}
+            className="w-6 h-6 rounded object-cover mr-3 shrink-0"
+            onError={(e) => {
+              (e.target as HTMLImageElement).style.display = 'none';
+              (e.target as HTMLImageElement).nextElementSibling?.classList.remove('hidden');
+            }}
+          />
+        ) : null}
+        <div className={`w-6 h-6 rounded bg-[#E4E4E7] flex items-center justify-center text-xs font-bold mr-3 shrink-0 text-[#18181B] ${contact.avatar ? 'hidden' : ''}`}>
           {contact.name.charAt(0)}
         </div>
         <div className="flex-1 min-w-0">
@@ -106,7 +117,7 @@ export function Sidebar({ className = '' }: { className?: string }) {
                 {subscribedContacts.length === 0 ? (
                   <div className="px-8 py-2 text-xs text-[#A1A1AA]">暂无订阅，无法生成视图</div>
                 ) : (
-                  views.filter(v => v.id !== 4).map(view => (
+                  views.filter(v => v.id !== 4 && v.id !== 3).map(view => (
                     <div 
                       key={view.id}
                       onClick={() => {
@@ -139,8 +150,15 @@ export function Sidebar({ className = '' }: { className?: string }) {
             {/* Person */}
             <div>
               <div 
-                className="text-[10px] font-bold text-[#A1A1AA] uppercase tracking-wider px-4 mb-2 flex items-center justify-between cursor-pointer hover:text-[#18181B] transition-colors"
-                onClick={() => toggleSection('person')}
+                className={`text-[10px] font-bold uppercase tracking-wider px-4 mb-2 flex items-center justify-between cursor-pointer transition-colors ${selectedContactType === 'person' ? 'text-[#18181B] bg-[#F4F4F5] py-1.5 rounded-md' : 'text-[#A1A1AA] hover:text-[#18181B]'}`}
+                onClick={() => {
+                  if (selectedContactType === 'person') {
+                    selectContactType(null);
+                  } else {
+                    selectContactType('person');
+                  }
+                  setShowWizard(false);
+                }}
               >
                 <div className="flex items-center">
                   {expandedSections.person ? <ChevronDown className="w-3 h-3 mr-1" /> : <ChevronRight className="w-3 h-3 mr-1" />}
@@ -155,8 +173,15 @@ export function Sidebar({ className = '' }: { className?: string }) {
             {/* Groups */}
             <div>
               <div 
-                className="text-[10px] font-bold text-[#A1A1AA] uppercase tracking-wider px-4 mb-2 mt-4 flex items-center justify-between cursor-pointer hover:text-[#18181B] transition-colors"
-                onClick={() => toggleSection('group')}
+                className={`text-[10px] font-bold uppercase tracking-wider px-4 mb-2 mt-4 flex items-center justify-between cursor-pointer transition-colors ${selectedContactType === 'group' ? 'text-[#18181B] bg-[#F4F4F5] py-1.5 rounded-md' : 'text-[#A1A1AA] hover:text-[#18181B]'}`}
+                onClick={() => {
+                  if (selectedContactType === 'group') {
+                    selectContactType(null);
+                  } else {
+                    selectContactType('group');
+                  }
+                  setShowWizard(false);
+                }}
               >
                 <div className="flex items-center">
                   {expandedSections.group ? <ChevronDown className="w-3 h-3 mr-1" /> : <ChevronRight className="w-3 h-3 mr-1" />}
@@ -171,8 +196,15 @@ export function Sidebar({ className = '' }: { className?: string }) {
             {/* Official Accounts */}
             <div>
               <div 
-                className="text-[10px] font-bold text-[#A1A1AA] uppercase tracking-wider px-4 mb-2 mt-4 flex items-center justify-between cursor-pointer hover:text-[#18181B] transition-colors"
-                onClick={() => toggleSection('official_account')}
+                className={`text-[10px] font-bold uppercase tracking-wider px-4 mb-2 mt-4 flex items-center justify-between cursor-pointer transition-colors ${selectedContactType === 'official_account' ? 'text-[#18181B] bg-[#F4F4F5] py-1.5 rounded-md' : 'text-[#A1A1AA] hover:text-[#18181B]'}`}
+                onClick={() => {
+                  if (selectedContactType === 'official_account') {
+                    selectContactType(null);
+                  } else {
+                    selectContactType('official_account');
+                  }
+                  setShowWizard(false);
+                }}
               >
                 <div className="flex items-center">
                   {expandedSections.official_account ? <ChevronDown className="w-3 h-3 mr-1" /> : <ChevronRight className="w-3 h-3 mr-1" />}
@@ -197,7 +229,11 @@ export function Sidebar({ className = '' }: { className?: string }) {
         </button>
         <button 
           className="flex items-center gap-1.5 text-[#18181B] hover:opacity-80 transition-opacity"
-          onClick={() => setShowWizard(true)}
+          onClick={() => {
+            const hasSubs = contacts.some(c => c.isSubscribed);
+            setSettingsTab(hasSubs ? 'general' : 'subs');
+            setShowWizard(true);
+          }}
         >
           <Settings className="w-4 h-4" />
           <span className="text-sm">设置</span>

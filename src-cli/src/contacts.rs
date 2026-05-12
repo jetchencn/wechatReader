@@ -36,7 +36,7 @@ fn load_contacts_from(db_path: &Path) -> Result<(HashMap<String, String>, Vec<se
     let conn = rusqlite::Connection::open(db_path)
         .map_err(|e| format!("打开 contact.db 失败: {}", e))?;
 
-    let mut stmt = conn.prepare("SELECT username, nick_name, remark FROM contact")
+    let mut stmt = conn.prepare("SELECT username, nick_name, remark, small_head_url FROM contact")
         .map_err(|e| format!("查询联系人失败: {}", e))?;
 
     let mut names = HashMap::new();
@@ -46,6 +46,7 @@ fn load_contacts_from(db_path: &Path) -> Result<(HashMap<String, String>, Vec<se
         let username: String = row.get(0)?;
         let nick_name: String = row.get::<_, Option<String>>(1)?.unwrap_or_default();
         let remark: String = row.get::<_, Option<String>>(2)?.unwrap_or_default();
+        let avatar: String = row.get::<_, Option<String>>(3)?.unwrap_or_default();
         let display = if !remark.is_empty() {
             remark.clone()
         } else if !nick_name.is_empty() {
@@ -53,16 +54,17 @@ fn load_contacts_from(db_path: &Path) -> Result<(HashMap<String, String>, Vec<se
         } else {
             username.clone()
         };
-        Ok((username, nick_name, remark, display))
+        Ok((username, nick_name, remark, display, avatar))
     }).map_err(|e| format!("读取联系人失败: {}", e))?;
 
     for row in rows {
-        if let Ok((username, nick_name, remark, display)) = row {
+        if let Ok((username, nick_name, remark, display, avatar)) = row {
             names.insert(username.clone(), display);
             full.push(serde_json::json!({
                 "username": username,
                 "nick_name": nick_name,
                 "remark": remark,
+                "avatar": avatar,
             }));
         }
     }
@@ -104,7 +106,11 @@ pub fn get_contact_full(cache: &mut DBCache, decrypted_dir: &Path) -> Vec<serde_
 /// 根据聊天名称解析 username
 pub fn resolve_username(chat_name: &str, cache: &mut DBCache, decrypted_dir: &Path) -> Option<String> {
     let names = get_contact_names(cache, decrypted_dir);
-    if names.contains_key(chat_name) || chat_name.starts_with("wxid_") || chat_name.contains("@chatroom") {
+    // Direct match: already a username (wxid_*, @chatroom, @openim, etc.) or in contact map
+    if names.contains_key(chat_name)
+        || chat_name.starts_with("wxid_")
+        || chat_name.contains('@')
+    {
         return Some(chat_name.to_string());
     }
     let chat_lower = chat_name.to_lowercase();

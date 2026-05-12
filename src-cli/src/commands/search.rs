@@ -3,6 +3,7 @@ use crate::messages::{
     self, parse_time_value, resolve_chat_context, resolve_chat_contexts,
     MSG_TYPE_FILTERS,
 };
+use chrono::TimeZone;
 use md5::{Digest, Md5};
 use std::collections::HashMap;
 use serde_json::Value;
@@ -210,10 +211,30 @@ fn search_in_chat(
                     display_name_fn(&sender)
                 } else { String::new() }
             } else {
-                String::new()
+                // For person chats, use sender from parse_message_content.
+                // The content format is "DisplayName:\nmessage" where DisplayName
+                // is the contact's display name or the user's display name.
+                // If sender is empty, fall back to real_sender_id.
+                if !sender.is_empty() {
+                    // sender from content is the raw display name (may include emoji)
+                    // If it contains chat_display, it's the contact; otherwise "me"
+                    if sender.contains(chat_display) || chat_display.contains(&sender) {
+                        chat_display.to_string()
+                    } else {
+                        "me".to_string()
+                    }
+                } else {
+                    let sender_username = id_to_username.get(real_sender_id).cloned().unwrap_or_default();
+                    if !sender_username.is_empty() && sender_username == chat_username {
+                        chat_display.to_string()
+                    } else {
+                        "me".to_string()
+                    }
+                }
             };
 
-            let time_str = chrono::DateTime::from_timestamp(*create_time, 0)
+            let time_str = chrono::Local.timestamp_opt(*create_time, 0)
+                .single()
                 .map(|dt| dt.format("%Y-%m-%d %H:%M").to_string())
                 .unwrap_or_default();
 
@@ -233,6 +254,9 @@ fn search_in_chat(
             collected.push((*create_time, entry));
         }
     }
+
+    // Sort collected results by timestamp descending (newest first) across all tables
+    collected.sort_by(|a, b| b.0.cmp(&a.0));
 
     (collected, failures)
 }

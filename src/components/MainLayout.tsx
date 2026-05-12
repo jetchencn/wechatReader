@@ -4,9 +4,62 @@ import { Sidebar } from './Sidebar';
 import { ContentArea } from './ContentArea';
 import { SettingsView } from './SettingsView';
 import { Dialog, DialogContent } from '@/components/ui/dialog';
+import { mockViews, mockMessages } from '../lib/mockData';
+import { Contact } from '../types';
+import { getMaxQueryLimit } from './SettingsView';
 
 export function MainLayout() {
-  const { isInitialized, showWizard, setShowWizard, selectedContactId, selectedViewId, views, selectView } = useAppStore();
+  const { isInitialized, showWizard, setShowWizard, selectedContactId, selectedViewId, views, selectView, setViews, setMessages, setContacts, setSubscribedContacts } = useAppStore();
+
+  // Load system views and mock messages
+  useEffect(() => {
+    setViews(mockViews);
+    setMessages(mockMessages);
+  }, [setViews, setMessages]);
+
+  // Load saved subscriptions from server on startup
+  useEffect(() => {
+    if (!isInitialized) return;
+
+    async function loadSavedSubscriptions() {
+      try {
+        // 1. Get saved subscription IDs
+        const idsRes = await fetch('/api/subscription-ids');
+        const idsJson = await idsRes.json();
+        if (!idsJson.ok || !Array.isArray(idsJson.data) || idsJson.data.length === 0) {
+          return;
+        }
+        const savedIds: string[] = idsJson.data;
+
+        // 2. Fetch all contacts and filter to only subscribed ones
+        const maxLimit = getMaxQueryLimit();
+        const contactsRes = await fetch(`/api/contacts?limit=${maxLimit}`);
+        const contactsJson = await contactsRes.json();
+        if (!contactsJson.ok || !Array.isArray(contactsJson.data)) {
+          return;
+        }
+
+        const subscribedContacts: Contact[] = contactsJson.data
+          .filter((c: { id: string; name: string; type: string; avatar?: string }) => savedIds.includes(c.id))
+          .map((c: { id: string; name: string; type: string; avatar?: string }) => ({
+            id: c.id,
+            type: c.type as Contact['type'],
+            name: c.name,
+            avatar: c.avatar || undefined,
+            isSubscribed: true,
+          }));
+
+        if (subscribedContacts.length > 0) {
+          setContacts(subscribedContacts);
+          setSubscribedContacts(savedIds);
+        }
+      } catch (err) {
+        console.error('Failed to load saved subscriptions:', err);
+      }
+    }
+
+    loadSavedSubscriptions();
+  }, [isInitialized, setContacts, setSubscribedContacts]);
 
   // Auto-show wizard if not initialized
   useEffect(() => {
@@ -51,9 +104,9 @@ export function MainLayout() {
         </div>
       </header>
 
-      <main className="flex flex-1 overflow-hidden">
+      <main className="flex flex-1 min-h-0 overflow-hidden">
         <Sidebar className="w-64 bg-white border-r border-[#E4E4E7] flex flex-col" />
-        <section className="flex-1 flex flex-col relative bg-[#F9F9FB] border-l border-[#E4E4E7] overflow-hidden">
+        <section className="flex-1 min-h-0 flex flex-col relative bg-[#F9F9FB] border-l border-[#E4E4E7] overflow-hidden">
           <ContentArea />
         </section>
       </main>

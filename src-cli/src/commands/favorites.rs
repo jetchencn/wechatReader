@@ -1,4 +1,5 @@
 use crate::contacts::get_contact_names;
+use chrono::TimeZone;
 use std::collections::HashMap;
 
 const FAV_TYPE_MAP: &[(i64, &str)] = &[
@@ -175,7 +176,8 @@ pub fn run(
             .find(|(id, _)| *id == typ)
             .map(|(_, name)| name.to_string())
             .unwrap_or_else(|| format!("type={}", typ));
-        let time_str = chrono::DateTime::from_timestamp(ts, 0)
+        let time_str = chrono::Local.timestamp_opt(ts, 0)
+            .single()
             .map(|dt| dt.format("%Y-%m-%d %H:%M").to_string())
             .unwrap_or_default();
 

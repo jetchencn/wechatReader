@@ -116,11 +116,11 @@ fn decompress_content(content: &[u8], ct: Option<i64>) -> Option<String> {
 
 // ===== 内容解析 =====
 
-fn parse_message_content(content: &str, _local_type: i64, is_group: bool) -> (String, String) {
+fn parse_message_content(content: &str, _local_type: i64, _is_group: bool) -> (String, String) {
     if content.is_empty() {
         return (String::new(), String::new());
     }
-    if is_group && content.contains(":\n") {
+    if content.contains(":\n") {
         let mut parts = content.splitn(2, ":\n");
         let sender = parts.next().unwrap_or("").to_string();
         let text = parts.next().unwrap_or("").to_string();
@@ -157,7 +157,7 @@ fn resolve_media_path(
         return (None, false);
     }
 
-    let dt = match chrono::DateTime::from_timestamp(create_time_ts, 0) {
+    let dt = match chrono::Local.timestamp_opt(create_time_ts, 0).single() {
         Some(d) => d,
         None => return (None, false),
     };
@@ -298,7 +298,8 @@ fn format_app_message_text(
         if resolve_media && db_dir.is_some() {
             let wechat_base = db_dir.unwrap().parent().unwrap();
             let msg_dir = wechat_base.join("msg/file");
-            let dt = chrono::DateTime::from_timestamp(create_time_ts, 0)
+            let dt = chrono::Local.timestamp_opt(create_time_ts, 0)
+                .single()
                 .map(|d| d.format("%Y-%m").to_string())
                 .unwrap_or_default();
             let file_dir = msg_dir.join(&dt);
@@ -591,7 +592,8 @@ fn build_history_line(
     db_dir: Option<&Path>,
 ) -> (i64, String) {
     let (local_id, local_type, create_time, real_sender_id, content_bytes, ct) = row;
-    let time_str = chrono::DateTime::from_timestamp(*create_time, 0)
+    let time_str = chrono::Local.timestamp_opt(*create_time, 0)
+        .single()
         .map(|dt| dt.format("%Y-%m-%d %H:%M").to_string())
         .unwrap_or_else(|| "unknown".to_string());
 

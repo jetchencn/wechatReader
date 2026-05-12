@@ -1,5 +1,6 @@
 use crate::contacts::get_contact_names;
 use crate::messages::format_msg_type;
+use chrono::TimeZone;
 use std::collections::HashMap;
 
 pub fn run(
@@ -69,7 +70,8 @@ pub fn run(
                 .unwrap_or_default()
         } else { String::new() };
 
-        let time_str = chrono::DateTime::from_timestamp(ts, 0)
+        let time_str = chrono::Local.timestamp_opt(ts, 0)
+            .single()
             .map(|dt| dt.format("%m-%d %H:%M").to_string())
             .unwrap_or_default();
 
