@@ -1,4 +1,5 @@
 import express from "express";
+import { createServer } from "http";
 import { createServer as createViteServer } from "vite";
 import path from "path";
 import { fileURLToPath } from 'url';
@@ -85,6 +86,173 @@ function classifyContact(c: RawContact): 'person' | 'group' | 'official_account'
   return 'person';
 }
 
+function decodeXmlEntities(str: string): string {
+  return str
+    .replace(/&amp;/g, '&')
+    .replace(/&lt;/g, '<')
+    .replace(/&gt;/g, '>')
+    .replace(/&quot;/g, '"')
+    .replace(/&apos;/g, "'");
+}
+
+/**
+ * Decode a WeChat .dat image file.
+ * WeChat XORs each byte with a key derived from the first byte.
+ *
+ * Multiple strategies are tried in order:
+ * 1. Derive key from first byte + expected magic bytes (JPEG/PNG/GIF/BMP/WebP)
+ * 2. Try common known WeChat XOR keys (0x38, 0xAB, 0xAC, etc.)
+ * 3. Brute-force search for any key that produces a valid image header
+ * 4. Try XOR with first byte itself (some versions use this)
+ */
+function decodeWechatDat(buf: Buffer): { data: Buffer; mime: string } | null {
+  if (buf.length < 10) return null;
+  const firstByte = buf[0];
+
+  // Helper: try to find a valid XOR key by checking the decoded header
+  function tryKey(key: number): { mime: string } | null {
+    const b0 = buf[0] ^ key;
+    const b1 = buf[1] ^ key;
+    const b2 = buf[2] ^ key;
+    const b3 = buf[3] ^ key;
+    const b4 = buf[4] ^ key;
+    const b5 = buf[5] ^ key;
+    const b6 = buf[6] ^ key;
+    const b7 = buf[7] ^ key;
+
+    // JPEG: FF D8 FF E0/E1/DB/C0/C4/FE...
+    if (b0 === 0xFF && b1 === 0xD8 && b2 === 0xFF) {
+      // Verify SOF marker is reasonable (E0-E2, DB, C0-C4, FE)
+      if (b3 >= 0xE0 && b3 <= 0xEF || b3 === 0xDB || b3 >= 0xC0 && b3 <= 0xC4 || b3 === 0xFE) {
+        return { mime: 'image/jpeg' };
+      }
+      // Even if SOF is unusual, FF D8 FF is very strong JPEG indicator
+      return { mime: 'image/jpeg' };
+    }
+    // PNG: 89 50 4E 47 0D 0A 1A 0A
+    if (b0 === 0x89 && b1 === 0x50 && b2 === 0x4E && b3 === 0x47
+        && b4 === 0x0D && b5 === 0x0A && b6 === 0x1A && b7 === 0x0A) {
+      return { mime: 'image/png' };
+    }
+    // PNG with fewer bytes verified (more lenient)
+    if (b0 === 0x89 && b1 === 0x50 && b2 === 0x4E && b3 === 0x47) {
+      return { mime: 'image/png' };
+    }
+    // GIF: 47 49 46 38 39 61 or 47 49 46 38 37 61
+    if (b0 === 0x47 && b1 === 0x49 && b2 === 0x46 && b3 === 0x38
+        && (b4 === 0x39 || b4 === 0x37) && b5 === 0x61) {
+      return { mime: 'image/gif' };
+    }
+    // BMP: 42 4D
+    if (b0 === 0x42 && b1 === 0x4D && buf.length >= 6) {
+      const decodedSize = (buf[2] ^ key) | ((buf[3] ^ key) << 8) | ((buf[4] ^ key) << 16) | ((buf[5] ^ key) << 24);
+      if (decodedSize > 0 && Math.abs(decodedSize - buf.length) < buf.length * 0.15) {
+        return { mime: 'image/bmp' };
+      }
+    }
+    // WebP: 52 49 46 46 ... 57 45 42 50
+    if (b0 === 0x52 && b1 === 0x49 && b2 === 0x46 && b3 === 0x46) {
+      // Verify WEBP marker at offset 8
+      const w0 = buf[8] ^ key;
+      const w1 = buf[9] ^ key;
+      const w2 = buf[10] ^ key;
+      const w3 = buf[11] ^ key;
+      if (w0 === 0x57 && w1 === 0x45 && w2 === 0x42 && w3 === 0x50) {
+        return { mime: 'image/webp' };
+      }
+    }
+    // HEIC/HEIF: 00 00 00 XX 66 74 79 70 (ftyp box)
+    if (b4 === 0x66 && b5 === 0x74 && b6 === 0x79 && b7 === 0x70) {
+      return { mime: 'image/heic' };
+    }
+    return null;
+  }
+
+  let xorKey = 0;
+  let mime = 'image/jpeg';
+
+  // Strategy 1: Derive key from first byte + expected header
+  const candidates = [
+    firstByte ^ 0xFF,  // JPEG key
+    firstByte ^ 0x89,  // PNG key
+    firstByte ^ 0x47,  // GIF key
+    firstByte ^ 0x42,  // BMP key
+    firstByte ^ 0x52,  // WebP key
+  ];
+
+  for (const key of candidates) {
+    const result = tryKey(key);
+    if (result) {
+      xorKey = key;
+      mime = result.mime;
+      break;
+    }
+  }
+
+  // Strategy 2: Try common known WeChat XOR keys
+  if (xorKey === 0) {
+    const fallbackKeys = [0x38, 0xAB, 0xAC, 0xAD, 0xAE, 0xAF, 0x36, 0x37, 0x39, 0x3A, 0x3B, 0x3C, 0x3D, 0x3E, 0x3F];
+    for (const key of fallbackKeys) {
+      const result = tryKey(key);
+      if (result) {
+        xorKey = key;
+        mime = result.mime;
+        break;
+      }
+    }
+  }
+
+  // Strategy 3: Brute-force search for any key that produces a valid header
+  if (xorKey === 0) {
+    for (let key = 0; key < 256; key++) {
+      const result = tryKey(key);
+      if (result) {
+        xorKey = key;
+        mime = result.mime;
+        break;
+      }
+    }
+  }
+
+  // Strategy 4: Try XOR with first byte itself (some WeChat versions)
+  if (xorKey === 0) {
+    const result = tryKey(firstByte);
+    if (result) {
+      xorKey = firstByte;
+      mime = result.mime;
+    }
+  }
+
+  if (xorKey === 0) return null;
+
+  // XOR all bytes with the key
+  const decoded = Buffer.alloc(buf.length);
+  for (let i = 0; i < buf.length; i++) {
+    decoded[i] = buf[i] ^ xorKey;
+  }
+  return { data: decoded, mime };
+}
+
+/**
+ * Detect image MIME type from raw buffer (without XOR decoding).
+ * Some WeChat .dat files are actually just renamed standard image files.
+ */
+function detectImageMimeFromRaw(buf: Buffer): string | null {
+  if (buf.length < 8) return null;
+  const b0 = buf[0], b1 = buf[1], b2 = buf[2], b3 = buf[3];
+  // JPEG
+  if (b0 === 0xFF && b1 === 0xD8 && b2 === 0xFF) return 'image/jpeg';
+  // PNG
+  if (b0 === 0x89 && b1 === 0x50 && b2 === 0x4E && b3 === 0x47) return 'image/png';
+  // GIF
+  if (b0 === 0x47 && b1 === 0x49 && b2 === 0x46 && b3 === 0x38) return 'image/gif';
+  // BMP
+  if (b0 === 0x42 && b1 === 0x4D) return 'image/bmp';
+  // WebP
+  if (b0 === 0x52 && b1 === 0x49 && b2 === 0x46 && b3 === 0x46) return 'image/webp';
+  return null;
+}
+
 function getDisplayName(c: RawContact): string {
   if (c.remark && c.remark.trim()) return c.remark;
   if (c.nick_name && c.nick_name.trim()) return c.nick_name;
@@ -93,9 +261,80 @@ function getDisplayName(c: RawContact): string {
 
 async function startServer() {
   const app = express();
-  const PORT = 3000;
+  const httpServer = createServer(app);
+  const PORT = parseInt(process.env.PORT || '3000', 10);
 
   app.use(express.json());
+
+  // -----------------------------------------------------------------------
+  // API: serve local image/file for preview
+  // -----------------------------------------------------------------------
+  app.get("/api/file", (req, res) => {
+    const filePath = req.query.path as string;
+    if (!filePath) {
+      res.status(400).json({ ok: false, error: 'path parameter required' });
+      return;
+    }
+    // Security: only allow files under common WeChat data directories
+    const normalized = path.normalize(filePath);
+    const allowedPrefixes = ['/Users/', '/home/', 'C:\\', 'D:\\'];
+    const isAllowed = allowedPrefixes.some(p => normalized.startsWith(p)) && !normalized.includes('..');
+    if (!isAllowed) {
+      res.status(403).json({ ok: false, error: 'Access denied' });
+      return;
+    }
+    if (!fs.existsSync(normalized)) {
+      res.status(404).json({ ok: false, error: 'File not found' });
+      return;
+    }
+    // Determine content type from extension
+    const ext = path.extname(normalized).toLowerCase();
+
+    // WeChat .dat files need XOR decoding
+    if (ext === '.dat') {
+      try {
+        const buf = fs.readFileSync(normalized);
+        const decoded = decodeWechatDat(buf);
+        if (decoded) {
+          res.setHeader('Content-Type', decoded.mime);
+          res.setHeader('Cache-Control', 'public, max-age=86400');
+          res.send(decoded.data);
+          return;
+        }
+        // If decoding fails, try sending the raw file with a generic image type
+        // Some .dat files are actually just renamed standard image files
+        // Try to detect by checking for common image signatures in the raw data
+        const rawMime = detectImageMimeFromRaw(buf);
+        if (rawMime) {
+          console.log(`[api/file] .dat file appears to be raw ${rawMime}, serving directly: ${normalized}`);
+          res.setHeader('Content-Type', rawMime);
+          res.setHeader('Cache-Control', 'public, max-age=86400');
+          res.send(buf);
+          return;
+        }
+        res.status(422).json({ ok: false, error: 'Unable to decode .dat file (unsupported encryption format)' });
+        return;
+      } catch {
+        res.status(500).json({ ok: false, error: 'Read error' });
+        return;
+      }
+    }
+
+    const mimeMap: Record<string, string> = {
+      '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg', '.png': 'image/png',
+      '.gif': 'image/gif', '.bmp': 'image/bmp', '.webp': 'image/webp',
+      '.svg': 'image/svg+xml', '.tiff': 'image/tiff', '.tif': 'image/tiff',
+      '.mp4': 'video/mp4', '.mov': 'video/quicktime',
+      '.pdf': 'application/pdf', '.doc': 'application/msword',
+      '.docx': 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+    };
+    const contentType = mimeMap[ext] || 'application/octet-stream';
+    res.setHeader('Content-Type', contentType);
+    res.setHeader('Cache-Control', 'public, max-age=86400');
+    const stream = fs.createReadStream(normalized);
+    stream.on('error', () => res.status(500).json({ ok: false, error: 'Read error' }));
+    stream.pipe(res);
+  });
 
   // -----------------------------------------------------------------------
   // API: fetch contacts from CLI (merge contacts + sessions)
@@ -272,9 +511,6 @@ async function startServer() {
         return;
       }
 
-      // Get unread chat names for isRead status
-      const unreadChats = getUnreadChatNames();
-
       // Transform CLI results into WeChatMessage format
       const messages: {
         id: string;
@@ -284,7 +520,6 @@ async function startServer() {
         contentType: string;
         content: string;
         timestamp: number;
-        isRead: boolean;
         metadata?: { url?: string };
       }[] = [];
 
@@ -326,28 +561,121 @@ async function startServer() {
           }
 
           // Detect content type from content markers
+          // Trim leading whitespace — CLI may output " [图片] /path" with leading space
+          const trimmedContent = content.trimStart();
           let contentType = 'text';
-          if (content.startsWith('[图片]')) contentType = 'image';
-          else if (content.startsWith('[语音]')) contentType = 'voice';
-          else if (content.startsWith('[视频]')) contentType = 'video';
-          else if (content.startsWith('[文件]')) contentType = 'file';
-          else if (content.startsWith('[链接]')) contentType = 'link';
-          else if (content.startsWith('[链接/文件]')) contentType = 'link';
-          else if (content.startsWith('[小程序]')) contentType = 'link';
+          let metadata: { url?: string; filePath?: string; title?: string; digest?: string } = {};
 
-          // Determine isRead: check if this chat has unread messages
-          const isRead = !unreadChats.has(chatName);
+          if (trimmedContent.startsWith('[图片]')) {
+            contentType = 'image';
+            // Extract file path from content like [图片] /path/to/file  or [图片] /path (文件不存在)
+            // The path starts with / or ../ or drive letter
+            const pathMatch = trimmedContent.match(/\[图片\]\s+((?:\/|\.\.\/|\w:\\)[^\s]+?)(?:\s*\(文件不存在\))?$/);
+            if (pathMatch) metadata.filePath = pathMatch[1];
+            // Extract local_id from content like [图片] (local_id=123)
+            if (!metadata.filePath) {
+              const lidMatch = trimmedContent.match(/local_id=(\d+)/);
+              if (lidMatch) metadata.filePath = `img:${lidMatch[1]}`;
+            }
+          } else if (trimmedContent.startsWith('[语音]')) {
+            contentType = 'voice';
+          } else if (trimmedContent.startsWith('[视频]')) {
+            contentType = 'video';
+          } else if (trimmedContent.startsWith('[文件]')) {
+            contentType = 'file';
+            // Extract file path from content like [文件] filename\n  /path/to/file
+            const fileMatch = trimmedContent.match(/\[文件\]\s*(.+?)(?:\n\s+(.+))?$/);
+            if (fileMatch) {
+              metadata.title = fileMatch[1].trim();
+              if (fileMatch[2]) metadata.filePath = fileMatch[2].trim();
+            }
+          } else if (trimmedContent.startsWith('[链接/文件]')) {
+            contentType = 'link';
+            // Try to extract URL from content (URL may contain &amp; entities)
+            const urlMatch = trimmedContent.match(/https?:\/\/[^\s<>"']+/);
+            if (urlMatch) metadata.url = decodeXmlEntities(urlMatch[0]);
+            // Extract title: [链接/文件] title URL → get title before URL
+            const titleAndUrlMatch = trimmedContent.match(/\[链接\/文件\]\s*(.+?)(?:\s+https?:\/\/|$)/);
+            if (titleAndUrlMatch && titleAndUrlMatch[1].trim()) metadata.title = titleAndUrlMatch[1].trim();
+          } else if (trimmedContent.startsWith('[链接]')) {
+            contentType = 'link';
+            const urlMatch = trimmedContent.match(/https?:\/\/[^\s<>"']+/);
+            if (urlMatch) metadata.url = decodeXmlEntities(urlMatch[0]);
+            // Extract title: [链接] title URL → get title before URL
+            const titleAndUrlMatch = trimmedContent.match(/\[链接\]\s*(.+?)(?:\s+https?:\/\/|$)/);
+            if (titleAndUrlMatch && titleAndUrlMatch[1].trim()) metadata.title = titleAndUrlMatch[1].trim();
+          } else if (trimmedContent.startsWith('[小程序]')) {
+            contentType = 'link';
+            // 小程序 may have weapp:// or https:// URL
+            const urlMatch = trimmedContent.match(/(?:https?:\/\/|weapp:\/\/)[^\s<>"']+/);
+            if (urlMatch) metadata.url = decodeXmlEntities(urlMatch[0]);
+            const titleAndUrlMatch = trimmedContent.match(/\[小程序\]\s*(.+?)(?:\s+(?:https?:\/\/|weapp:\/\/)|$)/);
+            if (titleAndUrlMatch && titleAndUrlMatch[1].trim()) metadata.title = titleAndUrlMatch[1].trim();
+          }
 
-          messages.push({
+          // For official accounts, check if content has article-like patterns
+          // Check: chat param starts with gh_, chatName contains 公众号, sender starts with gh_,
+          // or content type is already article
+          const isOfficialAccount = chatNames.some(cn => cn.startsWith('gh_')) || chatName.includes('公众号') || sender.startsWith('gh_') || contentType === 'article';
+          if (isOfficialAccount || contentType === 'link') {
+            // Try extracting URL if not already found
+            if (!metadata.url) {
+              const urlMatch = content.match(/https?:\/\/[^\s<>"']+/);
+              if (urlMatch) metadata.url = decodeXmlEntities(urlMatch[0]);
+            }
+            // Extract title from XML <title> tag if present
+            if (!metadata.title && content.includes('<title>')) {
+              const xmlTitleMatch = content.match(/<title>([\s\S]*?)<\/title>/);
+              if (xmlTitleMatch) {
+                let title = xmlTitleMatch[1].trim();
+                // Clean CDATA wrappers
+                title = title.replace(/<!\[CDATA\[/g, '').replace(/\]\]>/g, '');
+                if (title) metadata.title = title;
+              }
+            }
+            // Extract digest from <des> tag if present
+            if (!metadata.digest && content.includes('<des>')) {
+              const desMatch = content.match(/<des>([\s\S]*?)<\/des>/);
+              if (desMatch) {
+                let digest = desMatch[1].trim();
+                // Clean CDATA wrappers
+                digest = digest.replace(/<!\[CDATA\[/g, '').replace(/\]\]>/g, '');
+                if (digest) metadata.digest = digest;
+              }
+            }
+            // For links with URL, classify as article if it looks like a WeChat article
+            if (metadata.url && (metadata.url.includes('mp.weixin.qq.com') || metadata.url.includes('wechat.com'))) {
+              if (contentType === 'link') contentType = 'article';
+            }
+          }
+
+          // Determine isRead (always true since we no longer track read status)
+          const isRead = true;
+
+          const msgObj: {
+            id: string;
+            type: string;
+            contactId: string;
+            senderName: string;
+            contentType: string;
+            content: string;
+            timestamp: number;
+            metadata?: { url?: string; filePath?: string; title?: string; digest?: string };
+          } = {
             id: `msg-${timestamp}-${Math.random().toString(36).slice(2, 8)}`,
-            type: isGroup ? 'group' : 'person',
+            type: isGroup ? 'group' : isOfficialAccount ? 'official_account' : 'person',
             contactId: chatName,
             senderName: sender || chatName,
             contentType: contentType,
             content: content,
             timestamp: timestamp,
-            isRead: isRead,
-          });
+          };
+
+          if (Object.keys(metadata).length > 0) {
+            msgObj.metadata = metadata;
+          }
+
+          messages.push(msgObj);
         }
       }
 
@@ -496,7 +824,7 @@ async function startServer() {
   // Vite middleware for development
   if (process.env.NODE_ENV !== "production") {
     const vite = await createViteServer({
-      server: { middlewareMode: true },
+      server: { middlewareMode: true, hmr: { port: 3001 } },
       appType: "spa",
     });
     app.use(vite.middlewares);
@@ -508,7 +836,7 @@ async function startServer() {
     });
   }
 
-  app.listen(PORT, "0.0.0.0", () => {
+  httpServer.listen(PORT, "0.0.0.0", () => {
     console.log(`Server running on http://localhost:${PORT}`);
   });
 }

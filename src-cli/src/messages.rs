@@ -140,6 +140,90 @@ fn parse_int(value: &str, fallback: u64) -> u64 {
 
 // ===== 媒体路径解析 =====
 
+/// Extract md5 from image message XML content
+fn extract_img_md5(content: &str) -> Option<String> {
+    // Pattern: md5="abc123..." or md5='abc123...'
+    if let Some(md5_start) = content.find("md5=\"") {
+        let after = &content[md5_start + 5..];
+        if let Some(end) = after.find('\"') {
+            return Some(after[..end].to_string());
+        }
+    }
+    if let Some(md5_start) = content.find("md5='") {
+        let after = &content[md5_start + 5..];
+        if let Some(end) = after.find('\'') {
+            return Some(after[..end].to_string());
+        }
+    }
+    None
+}
+
+/// Check if a .dat filename matches the image md5 (filename is derived from md5)
+fn dat_matches_md5(filename: &str, md5: &str) -> bool {
+    // Strip suffixes and extension: _M.dat, _h.dat, _t.dat, .dat
+    let base = filename
+        .trim_end_matches(".dat")
+        .trim_end_matches("_t")
+        .trim_end_matches("_h")
+        .trim_end_matches("_M");
+    // The filename may be the first N chars of the md5, or the full md5
+    if base.len() >= 8 && md5.len() >= 8 {
+        base == &md5[..base.len().min(md5.len())] || md5.starts_with(base)
+    } else {
+        false
+    }
+}
+
+/// Classify a .dat file's quality for image preview.
+/// Returns (priority, variant) where lower priority is better.
+/// variant: 0=original/full, 1=hd, 2=medium, 3=thumb
+fn classify_dat(name: &str, img_md5: &Option<String>) -> (u8, u8) {
+    let is_match = img_md5.as_ref()
+        .map(|md5| dat_matches_md5(name, md5))
+        .unwrap_or(false);
+    let match_bonus = if is_match { 0 } else { 4 };
+
+    if name.ends_with("_t.dat") {
+        (match_bonus + 3, 3) // thumb: lowest quality
+    } else if name.ends_with("_h.dat") {
+        (match_bonus + 1, 1) // hd: good quality
+    } else if name.ends_with("_M.dat") {
+        (match_bonus + 2, 2) // medium: decent quality
+    } else if name.ends_with(".dat") {
+        (match_bonus + 0, 0) // original: best quality
+    } else {
+        (255, 0) // not a .dat file
+    }
+}
+
+/// Cache for attach directory subdirectories (keyed by attach_dir path).
+/// Avoids repeated `read_dir` calls for every image message.
+use std::sync::Mutex;
+
+lazy_static::lazy_static! {
+    static ref ATTACH_DIR_CACHE: Mutex<HashMap<String, Vec<String>>> = Mutex::new(HashMap::new());
+}
+
+fn get_attach_subdirs(attach_dir: &Path) -> Vec<String> {
+    let key = attach_dir.to_string_lossy().to_string();
+    {
+        let cache = ATTACH_DIR_CACHE.lock().unwrap();
+        if let Some(subdirs) = cache.get(&key) {
+            return subdirs.clone();
+        }
+    }
+    let mut subdirs = Vec::new();
+    if let Ok(entries) = std::fs::read_dir(attach_dir) {
+        for entry in entries.flatten() {
+            let name = entry.file_name().to_string_lossy().to_string();
+            subdirs.push(name);
+        }
+    }
+    let mut cache = ATTACH_DIR_CACHE.lock().unwrap();
+    cache.insert(key, subdirs.clone());
+    subdirs
+}
+
 fn resolve_media_path(
     db_dir: &Path,
     content: &str,
@@ -194,20 +278,64 @@ fn resolve_media_path(
 
         let sub_dir_name = if base_type == 3 { "Img" } else if base_type == 43 { "Video" } else { "Voice" };
 
-        if let Ok(entries) = std::fs::read_dir(&attach_dir) {
-            for entry in entries.flatten() {
-                let sub = entry.path().join(&date_prefix).join(sub_dir_name);
-                if sub.is_dir() {
-                    if let Ok(files) = std::fs::read_dir(&sub) {
-                        for file in files.flatten() {
-                            let name = file.file_name().to_string_lossy().to_string();
-                            if !name.ends_with("_h.dat") {
-                                return (Some(file.path().to_string_lossy().to_string()), true);
-                            }
+        // Extract md5 from content to match the correct file
+        let img_md5 = if base_type == 3 { extract_img_md5(content) } else { None };
+
+        // Use cached subdirectory listing instead of repeated read_dir
+        let subdirs = get_attach_subdirs(&attach_dir);
+
+        // Try exact md5 match first: build direct path and check existence
+        if let Some(ref md5) = img_md5 {
+            for subdir_name in &subdirs {
+                let sub = attach_dir.join(subdir_name).join(&date_prefix).join(sub_dir_name);
+                if !sub.is_dir() {
+                    continue;
+                }
+                // Try variants in priority order: original > medium > hd > thumb
+                let variants = [
+                    format!("{}.dat", md5),
+                    format!("{}_M.dat", md5),
+                    format!("{}_h.dat", md5),
+                    format!("{}_t.dat", md5),
+                ];
+                for variant in &variants {
+                    let path = sub.join(variant);
+                    if path.is_file() {
+                        return (Some(path.to_string_lossy().to_string()), true);
+                    }
+                }
+            }
+            // md5 was provided but no file found — skip the expensive fallback scan
+            // (without md5 match, scanning is pointless as we can't identify the right file)
+            return (None, false);
+        }
+
+        // Fallback (no md5): scan for best match using cached subdirs
+        let mut best_priority: u8 = 255;
+        let mut best_path: Option<std::path::PathBuf> = None;
+
+        for subdir_name in &subdirs {
+            let sub = attach_dir.join(subdir_name).join(&date_prefix).join(sub_dir_name);
+            if !sub.is_dir() {
+                continue;
+            }
+            if let Ok(files) = std::fs::read_dir(&sub) {
+                for file in files.flatten() {
+                    let name = file.file_name().to_string_lossy().to_string();
+                    let (priority, _) = classify_dat(&name, &img_md5);
+                    if priority < best_priority {
+                        best_priority = priority;
+                        best_path = Some(file.path());
+                        if priority == 0 {
+                            return (Some(file.path().to_string_lossy().to_string()), true);
                         }
                     }
                 }
             }
+        }
+
+        if let Some(p) = best_path {
+            return (Some(p.to_string_lossy().to_string()), true);
         }
 
         if base_type == 43 {
@@ -234,8 +362,55 @@ fn extract_appmsg_title(content: &str) -> Option<String> {
         if let Some(title_start) = rest.find("<title>") {
             let after_title = &rest[title_start + 7..];
             if let Some(title_end) = after_title.find("</title>") {
-                return Some(after_title[..title_end].to_string());
+                let title = after_title[..title_end].trim();
+                // Clean CDATA wrappers
+                let cleaned = title.replace("<![CDATA[", "").replace("]]>", "");
+                return Some(cleaned);
             }
+        }
+    }
+    None
+}
+
+fn extract_url_from_xml(content: &str) -> Option<String> {
+    // Try <url> tag first (most common for WeChat articles)
+    if let Some(start) = content.find("<url>") {
+        let after = &content[start + 5..];
+        if let Some(end) = after.find("</url>") {
+            let url = after[..end].trim().to_string();
+            if url.starts_with("http") {
+                // Decode CDATA if present
+                let decoded = url.replace("&amp;", "&").replace("&lt;", "<").replace("&gt;", ">").replace("&quot;", "\"");
+                return Some(decoded);
+            }
+        }
+    }
+    // Try <sourcedisplayname> or <weappinfo><pagepath> patterns
+    if let Some(start) = content.find("<weappinfo>") {
+        let section = &content[start..];
+        if let Some(pp_start) = section.find("<pagepath>") {
+            let after = &section[pp_start + 10..];
+            if let Some(pp_end) = after.find("</pagepath>") {
+                let path = after[..pp_end].trim();
+                if !path.is_empty() {
+                    return Some(format!("weapp://{}", path));
+                }
+            }
+        }
+    }
+    // Try plain http URL in content
+    if let Some(pos) = content.find("http://") {
+        let rest = &content[pos..];
+        let url: String = rest.chars().take_while(|c| !c.is_whitespace() && *c != '<' && *c != '"').collect();
+        if url.len() > 10 {
+            return Some(url);
+        }
+    }
+    if let Some(pos) = content.find("https://") {
+        let rest = &content[pos..];
+        let url: String = rest.chars().take_while(|c| !c.is_whitespace() && *c != '<' && *c != '"').collect();
+        if url.len() > 10 {
+            return Some(url);
         }
     }
     None
@@ -315,16 +490,29 @@ fn format_app_message_text(
 
     // 链接 (app_type 5)
     if app_type == 5 {
+        let url = extract_url_from_xml(content);
+        if let Some(u) = &url {
+            return Some(format!("[链接] {} {}", title, u));
+        }
         return Some(format!("[链接] {}", title));
     }
 
     // 小程序 (app_type 33, 36, 44)
     if app_type == 33 || app_type == 36 || app_type == 44 {
+        let url = extract_url_from_xml(content);
+        if let Some(u) = &url {
+            return Some(format!("[小程序] {} {}", title, u));
+        }
         return Some(format!("[小程序] {}", title));
     }
 
     if !title.is_empty() {
-        Some(format!("[链接/文件] {}", title))
+        let url = extract_url_from_xml(content);
+        if let Some(u) = &url {
+            Some(format!("[链接/文件] {} {}", title, u))
+        } else {
+            Some(format!("[链接/文件] {}", title))
+        }
     } else {
         Some("[链接/文件]".to_string())
     }

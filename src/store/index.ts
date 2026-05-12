@@ -14,6 +14,9 @@ interface AppState {
   selectedContactId: string | null;
   selectedViewId: number | null;
   selectedContactType: ContactType | null;
+  selectedMessageId: string | null;
+  isRightPanelOpen: boolean;
+  rightPanelTab: 'detail' | 'analysis';
   searchQuery: string;
   showWizard: boolean;
   settingsTab: string;
@@ -32,6 +35,9 @@ interface AppState {
   selectContact: (id: string | null) => void;
   selectView: (id: number | null) => void;
   selectContactType: (type: ContactType | null) => void;
+  selectMessage: (id: string | null) => void;
+  setRightPanelOpen: (val: boolean) => void;
+  setRightPanelTab: (tab: 'detail' | 'analysis') => void;
   setSearchQuery: (query: string) => void;
   setViews: (views: SavedView[]) => void;
   setMessages: (messages: WeChatMessage[]) => void;
@@ -53,6 +59,9 @@ export const useAppStore = create<AppState>((set) => ({
   selectedContactId: null,
   selectedViewId: null,
   selectedContactType: null,
+  selectedMessageId: null,
+  isRightPanelOpen: false,
+  rightPanelTab: 'analysis',
   searchQuery: '',
   showWizard: false,
   settingsTab: '',
@@ -86,9 +95,12 @@ export const useAppStore = create<AppState>((set) => ({
     selectedContactId: state.selectedContactId && !contactIds.includes(state.selectedContactId) ? null : state.selectedContactId
   })),
   
-  selectContact: (id) => set({ selectedContactId: id, selectedViewId: null, selectedContactType: null, searchQuery: '' }),
-  selectView: (id) => set({ selectedViewId: id, selectedContactId: null, selectedContactType: null, searchQuery: '' }),
-  selectContactType: (type) => set({ selectedContactType: type, selectedContactId: null, selectedViewId: null, searchQuery: '' }),
+  selectContact: (id) => set({ selectedContactId: id, selectedViewId: null, selectedContactType: null, searchQuery: '', selectedMessageId: null }),
+  selectView: (id) => set({ selectedViewId: id, selectedContactId: null, selectedContactType: null, searchQuery: '', selectedMessageId: null }),
+  selectContactType: (type) => set({ selectedContactType: type, selectedContactId: null, selectedViewId: null, searchQuery: '', selectedMessageId: null }),
+  selectMessage: (id) => set({ selectedMessageId: id }),
+  setRightPanelOpen: (val) => set({ isRightPanelOpen: val }),
+  setRightPanelTab: (tab) => set({ rightPanelTab: tab }),
   setSearchQuery: (query) => set({ searchQuery: query, selectedContactId: null, selectedViewId: null, selectedContactType: null }),
   setViews: (views) => set({ views }),
   setMessages: (messages) => set({ messages }),

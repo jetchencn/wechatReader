@@ -13,11 +13,16 @@ export function ContentArea() {
   const [serverMessages, setServerMessages] = useState<WeChatMessage[] | null>(null);
   const [isLoading, setIsLoading] = useState(false);
   const [fetchError, setFetchError] = useState<string | null>(null);
+  const [refreshKey, setRefreshKey] = useState(0);
 
   // Fetch messages for contact type view
   const [typeMessages, setTypeMessages] = useState<WeChatMessage[] | null>(null);
   const [isTypeLoading, setIsTypeLoading] = useState(false);
   const [typeFetchError, setTypeFetchError] = useState<string | null>(null);
+  const [typeRefreshKey, setTypeRefreshKey] = useState(0);
+
+  const handleRefresh = () => setRefreshKey(k => k + 1);
+  const handleTypeRefresh = () => setTypeRefreshKey(k => k + 1);
 
   useEffect(() => {
     if (!selectedContactId) {
@@ -75,7 +80,7 @@ export function ContentArea() {
 
     fetchMessages();
     return () => { cancelled = true; };
-  }, [selectedContactId, contacts]);
+  }, [selectedContactId, contacts, refreshKey]);
 
   // Fetch messages for contact type view
   useEffect(() => {
@@ -99,36 +104,24 @@ export function ContentArea() {
       setTypeFetchError(null);
       try {
         const maxLimit = getMaxQueryLimit();
-        const allMessages: WeChatMessage[] = [];
-        const CONCURRENCY = 5;
-        let failureCount = 0;
+        const chatIds = typedContacts.map(c => c.id);
 
-        const queue = [...typedContacts];
-        async function worker() {
-          while (queue.length > 0) {
-            const contact = queue.shift()!;
-            try {
-              const params = new URLSearchParams({ limit: String(maxLimit), offset: '0', chat: contact.id });
-              const res = await fetch(`/api/messages?${params.toString()}`);
-              if (!res.ok) throw new Error(`Server returned ${res.status}`);
-              const json = await res.json();
-              if (json.ok && Array.isArray(json.data?.messages)) {
-                allMessages.push(...json.data.messages as WeChatMessage[]);
-              }
-            } catch (e) {
-              failureCount++;
-              console.warn(`[ContentArea] Type fetch failed for "${contact.name}":`, e);
-            }
-          }
-        }
+        // Send all chats in a single request instead of N separate requests
+        const params = new URLSearchParams({ limit: String(maxLimit), offset: '0' });
+        chatIds.forEach(id => params.append('chat', id));
 
-        const workers = Array.from({ length: Math.min(CONCURRENCY, typedContacts.length) }, () => worker());
-        await Promise.all(workers);
+        const res = await fetch(`/api/messages?${params.toString()}`);
+        if (!res.ok) throw new Error(`Server returned ${res.status}`);
+        const json = await res.json();
 
         if (cancelled) return;
-        setTypeMessages(allMessages);
-        if (failureCount > 0) {
-          setTypeFetchError(`${failureCount} 个会话加载失败`);
+
+        if (json.ok && Array.isArray(json.data?.messages)) {
+          setTypeMessages(json.data.messages as WeChatMessage[]);
+        } else {
+          const errMsg = json.error || 'No data returned';
+          setTypeFetchError(errMsg);
+          setTypeMessages(null);
         }
       } catch (err) {
         if (!cancelled) {
@@ -142,7 +135,7 @@ export function ContentArea() {
 
     fetchTypeMessages();
     return () => { cancelled = true; };
-  }, [selectedContactType, contacts]);
+  }, [selectedContactType, contacts, typeRefreshKey]);
 
   const filteredMessages = useMemo(() => {
     if (!selectedContactId) return [];
@@ -198,6 +191,8 @@ export function ContentArea() {
           enablePagination={true}
           showDate={true}
           hideContactColumn={true}
+          showAnalysisToggle={true}
+          onRefresh={handleTypeRefresh}
         />
       </div>
     );
@@ -236,6 +231,7 @@ export function ContentArea() {
               searchPlaceholder={`在 "${contact.name}" 中搜索...`}
               hideContactColumn={contact.type === 'person'}
               showDate={true}
+              enablePagination={true}
             />
           </div>
         </div>
@@ -252,6 +248,9 @@ export function ContentArea() {
           searchPlaceholder={`在 "${contact.name}" 中搜索...`}
           hideContactColumn={contact.type === 'person'}
           showDate={true}
+          enablePagination={true}
+          showAnalysisToggle={true}
+          onRefresh={handleRefresh}
         />
       </div>
     );
@@ -270,8 +269,15 @@ function EmptyState() {
 
   return (
     <div className="flex flex-col items-center justify-center flex-1 min-h-0 text-[#A1A1AA] bg-[#F9F9FB]">
-      <div className="w-24 h-24 bg-[#F4F4F5] rounded-2xl border border-dashed border-[#D4D4D8] flex items-center justify-center mb-6">
-        <FolderSync className="w-10 h-10 text-[#A1A1AA]" />
+      <div className="w-24 h-24 bg-[#07C160] rounded-2xl border border-[#D4D4D8] flex items-center justify-center mb-6">
+        <svg viewBox="0 0 24 24" fill="none" className="w-14 h-14" xmlns="http://www.w3.org/2000/svg">
+          <path d="M8.5 6C5.46 6 3 8.24 3 11c0 1.56.78 2.96 2 3.86L4.5 17l2.5-1.5c.78.3 1.63.5 2.5.5.34 0 .67-.03 1-.08C10.18 15.48 10 15 10 14.5c0-2.76 2.46-5 5.5-5 .34 0 .67.03 1 .08C16.12 7.48 12.76 6 8.5 6z" fill="white"/>
+          <path d="M15.5 11c-2.49 0-4.5 1.79-4.5 4s2.01 4 4.5 4c.67 0 1.3-.12 1.87-.33L19.5 20l-.62-1.87C19.9 17.33 20 16.44 20 15.5c0-2.21-2.01-4.5-4.5-4.5z" fill="white" fillOpacity="0.85"/>
+          <circle cx="7" cy="10.5" r="0.8" fill="white"/>
+          <circle cx="10" cy="10.5" r="0.8" fill="white"/>
+          <circle cx="14" cy="15" r="0.6" fill="white"/>
+          <circle cx="17" cy="15" r="0.6" fill="white"/>
+        </svg>
       </div>
       <h2 className="text-xl font-bold text-[#18181B] mb-2 italic tracking-tight">WechatReader</h2>
       {isInitialized ? (

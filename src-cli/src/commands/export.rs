@@ -20,14 +20,15 @@ pub fn run(
         names_map.insert(k, v);
     }
 
+    let self_username = crate::contacts::get_self_username(
+        &app.db_dir, &mut app.cache.borrow_mut(), &app.decrypted_dir
+    );
+
     let display_name_fn = |username: &str| -> String {
         if username.is_empty() {
             return String::new();
         }
-        let self_usr = crate::contacts::get_self_username(
-            &app.db_dir, &mut app.cache.borrow_mut(), &app.decrypted_dir
-        );
-        if username == self_usr { "me".to_string() }
+        if username == self_username { "me".to_string() }
         else { names_map.get(username).cloned().unwrap_or_else(|| username.to_string()) }
     };
 

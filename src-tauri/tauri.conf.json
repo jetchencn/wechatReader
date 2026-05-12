@@ -5,8 +5,8 @@
   "identifier": "club.refactoring.wichat-reader",
   "build": {
     "frontendDist": "../dist",
-    "devUrl": "http://localhost:5173",
-    "beforeDevCommand": "npm run dev:vite",
+    "devUrl": "http://localhost:3000",
+    "beforeDevCommand": "npm run dev",
     "beforeBuildCommand": "npm run build"
   },
   "app": {
@@ -29,8 +29,8 @@
       "csp": {
         "default-src": "'self' ipc: http://ipc.localhost",
         "script-src": "'self'",
-        "connect-src": "'self' ipc: http://ipc.localhost data: ws: https:",
-        "img-src": "'self' asset: http://asset.localhost data: blob: https:",
+        "connect-src": "'self' ipc: http://ipc.localhost http://localhost:3000 data: ws: https:",
+        "img-src": "'self' asset: http://asset.localhost http://localhost:3000 data: blob: https:",
         "style-src": "'self' 'unsafe-inline'",
         "font-src": "'self' data:"
       }

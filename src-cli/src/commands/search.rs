@@ -6,6 +6,7 @@ use crate::messages::{
 use chrono::TimeZone;
 use md5::{Digest, Md5};
 use std::collections::HashMap;
+use std::path::Path;
 use serde_json::Value;
 
 pub fn run(
@@ -28,14 +29,16 @@ pub fn run(
         names_map.insert(k, v);
     }
 
+    // Cache self_username once — get_self_username calls get_contact_names which reads the DB
+    let self_username = crate::contacts::get_self_username(
+        &app.db_dir, &mut app.cache.borrow_mut(), &app.decrypted_dir
+    );
+
     let display_name_fn = |username: &str| -> String {
         if username.is_empty() {
             return String::new();
         }
-        let self_usr = crate::contacts::get_self_username(
-            &app.db_dir, &mut app.cache.borrow_mut(), &app.decrypted_dir
-        );
-        if username == self_usr {
+        if username == self_username {
             return "me".to_string();
         }
         names_map.get(username).cloned().unwrap_or_else(|| username.to_string())
@@ -59,7 +62,7 @@ pub fn run(
             Some(ctx_val) => {
                 let display = ctx_val["display_name"].as_str().unwrap_or(&chat_names[0]).to_string();
                 let (e, f) = search_in_chat(&ctx_val, keyword, &names_map, &display_name_fn,
-                    start_ts, end_ts, search_batch, type_filter);
+                    start_ts, end_ts, search_batch, type_filter, Some(&app.db_dir));
                 (display, e, f)
             }
             None => {
@@ -77,7 +80,7 @@ pub fn run(
         let mut all_failures = Vec::new();
         for rc in &resolved {
             let (e, f) = search_in_chat(rc, keyword, &names_map, &display_name_fn,
-                start_ts, end_ts, limit + offset, type_filter);
+                start_ts, end_ts, limit + offset, type_filter, Some(&app.db_dir));
             all_entries.extend(e);
             all_failures.extend(f);
         }
@@ -141,6 +144,7 @@ fn search_in_chat(
     end_ts: Option<i64>,
     max_results: i64,
     msg_type_filter: Option<(u64, Option<u64>)>,
+    db_dir: Option<&Path>,
 ) -> (Vec<(i64, String)>, Vec<String>) {
     let tables = ctx["message_tables"].as_array().cloned().unwrap_or_default();
     let mut collected = Vec::new();
@@ -196,7 +200,7 @@ fn search_in_chat(
 
             let (sender, text) = crate::messages::format_message_text_internal(
                 *local_id, *local_type, &content, is_group, chat_username, chat_display,
-                names, display_name_fn, None, *create_time, false,
+                names, display_name_fn, db_dir, *create_time, true,
             );
 
             if !keyword.is_empty() && !text.to_lowercase().contains(&keyword.to_lowercase()) {
@@ -328,7 +332,7 @@ fn global_search(
             });
 
             let (e, f) = search_in_chat(&ctx_inner, keyword, names, display_name_fn,
-                start_ts, end_ts, max_results, msg_type_filter);
+                start_ts, end_ts, max_results, msg_type_filter, Some(&app.db_dir));
             collected.extend(e);
             failures.extend(f);
         }

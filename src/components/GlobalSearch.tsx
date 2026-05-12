@@ -18,6 +18,9 @@ export function GlobalSearch({ overrideViewId }: { overrideViewId?: number }) {
   const [serverMessages, setServerMessages] = useState<WeChatMessage[] | null>(null);
   const [isLoading, setIsLoading] = useState(false);
   const [fetchError, setFetchError] = useState<string | null>(null);
+  const [refreshKey, setRefreshKey] = useState(0);
+
+  const handleRefresh = () => setRefreshKey(k => k + 1);
 
   // Build time params based on view
   const getTimeParams = useCallback(() => {
@@ -93,59 +96,26 @@ export function GlobalSearch({ overrideViewId }: { overrideViewId?: number }) {
           return;
         }
 
-        // Other views: fetch messages per chat
+        // Other views: fetch messages for all subscribed chats in a single request
         const subscribedContacts = contacts.filter(c => c.isSubscribed);
-        const allMessages: WeChatMessage[] = [];
         const maxLimit = getMaxQueryLimit();
-        const CONCURRENCY = 5; // limit concurrent CLI processes to avoid timeout
 
-        // Use contact.id (wxid) instead of contact.name to avoid CLI display name resolution issues
-        async function fetchWithConcurrency<T>(
-          items: T[],
-          fn: (item: T) => Promise<WeChatMessage[]>,
-          concurrency: number
-        ): Promise<WeChatMessage[]> {
-          const results: WeChatMessage[] = [];
-          const queue = [...items];
-          async function worker() {
-            while (queue.length > 0) {
-              const item = queue.shift()!;
-              const msgs = await fn(item);
-              results.push(...msgs);
-            }
-          }
-          const workers = Array.from({ length: Math.min(concurrency, items.length) }, () => worker());
-          await Promise.all(workers);
-          return results;
-        }
+        const params = getTimeParams();
+        params.set('limit', String(maxLimit));
+        params.set('offset', '0');
+        subscribedContacts.forEach(c => params.append('chat', c.id));
 
-        const fetchedMessages = await fetchWithConcurrency(
-          subscribedContacts,
-          async (contact) => {
-            try {
-              const params = getTimeParams();
-              params.set('limit', String(maxLimit));
-              params.set('offset', '0');
-              params.set('chat', contact.id);
-
-              const res = await fetch(`/api/messages?${params.toString()}`);
-              const json = await res.json();
-
-              if (json.ok && Array.isArray(json.data?.messages)) {
-                return json.data.messages as WeChatMessage[];
-              }
-            } catch (e) {
-              console.warn(`[GlobalSearch] Failed to fetch messages for "${contact.name}":`, e);
-            }
-            return [];
-          },
-          CONCURRENCY
-        );
+        const res = await fetch(`/api/messages?${params.toString()}`);
+        const json = await res.json();
 
         if (cancelled) return;
-        allMessages.push(...fetchedMessages);
 
-        setServerMessages(allMessages);
+        if (json.ok && Array.isArray(json.data?.messages)) {
+          setServerMessages(json.data.messages as WeChatMessage[]);
+        } else {
+          setFetchError(json.error || 'Failed to fetch messages');
+          setServerMessages(null);
+        }
       } catch (err) {
         if (!cancelled) {
           setFetchError(String(err));
@@ -160,7 +130,7 @@ export function GlobalSearch({ overrideViewId }: { overrideViewId?: number }) {
 
     fetchMessages();
     return () => { cancelled = true; };
-  }, [view?.id, view?.filters?.timeRange, getTimeParams, contacts]);
+  }, [view?.id, view?.filters?.timeRange, getTimeParams, contacts, refreshKey]);
 
   // Use server messages if available, otherwise fall back to store messages
   const effectiveMessages = serverMessages ?? messages;
@@ -250,6 +220,8 @@ export function GlobalSearch({ overrideViewId }: { overrideViewId?: number }) {
             title={title}
             icon={icon}
             searchPlaceholder={view ? `在"${view.name}"中搜索...` : "搜索结果..."}
+            showAnalysisToggle={true}
+            onRefresh={handleRefresh}
           />
         </div>
       </div>
@@ -268,6 +240,8 @@ export function GlobalSearch({ overrideViewId }: { overrideViewId?: number }) {
       searchPlaceholder={view ? `在"${view.name}"中搜索...` : "搜索结果..."}
       enablePagination={true}
       showDate={view?.id === 2 || view?.id === 3}
+      showAnalysisToggle={true}
+      onRefresh={handleRefresh}
     />
   );
 }

@@ -24,13 +24,14 @@ pub fn run(
         names_map.insert(k, v);
     }
 
+    let self_username = crate::contacts::get_self_username(
+        &app.db_dir, &mut app.cache.borrow_mut(), &app.decrypted_dir
+    );
+
     let display_name_fn = |username: &str| -> String {
         if username.is_empty() {
             return String::new();
         }
-        let self_username = crate::contacts::get_self_username(
-            &app.db_dir, &mut app.cache.borrow_mut(), &app.decrypted_dir
-        );
         if username == self_username {
             return "me".to_string();
         }

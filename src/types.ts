@@ -19,6 +19,8 @@ export interface MessageMetadata {
   thumbnail?: string;
   fileSize?: number;
   duration?: number;
+  digest?: string;
+  title?: string;
 }
 
 export interface WeChatMessage {
