@@ -104,7 +104,7 @@ export function MessageTable({ messages, title, icon, searchPlaceholder, showFil
 
   const [currentPage, setCurrentPage] = useState(0);
   const [isRefreshing, setIsRefreshing] = useState(false);
-  const [previewImage, setPreviewImage] = useState<string | null>(null);
+  const [previewImage, setPreviewImage] = useState<{ path: string; contactId?: string } | null>(null);
 
   const getContactName = (contactId: string) => {
     // Try lookup by WeChat username (id) first (for mock data)
@@ -477,10 +477,12 @@ export function MessageTable({ messages, title, icon, searchPlaceholder, showFil
                     {msg.contentType === 'file' ? (
                       <div className="flex items-center text-[#18181B] font-medium"><FileText className="w-4 h-4 mr-1.5 text-[#A1A1AA]"/> {msg.content}</div>
                     ) : msg.contentType === 'image' ? (
-                      msg.metadata?.filePath && !msg.metadata.filePath.startsWith('img:') ? (
-                        <div className="flex items-center gap-2 cursor-zoom-in" onClick={(e) => { e.stopPropagation(); setPreviewImage(msg.metadata?.filePath || null); }}>
+                      msg.metadata?.filePath ? (
+                        <div className="flex items-center gap-2 cursor-zoom-in" onClick={(e) => { e.stopPropagation(); setPreviewImage({ path: msg.metadata?.filePath || '', contactId: msg.contactId }); }}>
                           <img 
-                            src={`/api/file?path=${encodeURIComponent(msg.metadata.filePath)}`}
+                            src={msg.metadata.filePath.startsWith('img:') 
+                              ? `/api/image?local_id=${msg.metadata.filePath.slice(4)}&chat=${encodeURIComponent(msg.contactId)}`
+                              : `/api/file?path=${encodeURIComponent(msg.metadata.filePath)}`}
                             alt="缩略图"
                             className="w-10 h-10 object-cover rounded border border-[#E4E4E7] bg-gray-50"
                             onError={(e) => {
@@ -794,7 +796,7 @@ export function MessageTable({ messages, title, icon, searchPlaceholder, showFil
                           {selectedMessage.metadata?.filePath && !selectedMessage.metadata.filePath.startsWith('img:') ? (
                             <div 
                               className="rounded-lg border border-[#E4E4E7] overflow-hidden cursor-zoom-in hover:opacity-90 transition-opacity bg-gray-50"
-                              onClick={() => setPreviewImage(selectedMessage.metadata?.filePath || null)}
+                              onClick={() => setPreviewImage({ path: selectedMessage.metadata?.filePath || '', contactId: selectedMessage.contactId })}
                             >
                               <img 
                                 src={`/api/file?path=${encodeURIComponent(selectedMessage.metadata.filePath)}`}
@@ -809,6 +811,28 @@ export function MessageTable({ messages, title, icon, searchPlaceholder, showFil
                                     parent.onclick = null;
                                     parent.style.cursor = 'default';
                                     parent.innerHTML = `<svg xmlns="http://www.w3.org/2000/svg" class="w-12 h-12 text-amber-300 mx-auto mb-2" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><rect x="3" y="3" width="18" height="18" rx="2"/><circle cx="8.5" cy="8.5" r="1.5"/><path d="m21 15-5-5L5 21"/></svg><p class="text-xs text-amber-600 font-medium">图片解密失败</p><p class="text-[10px] text-amber-400 mt-1">微信版本更新可能导致加密方式变化</p><p class="text-[10px] text-amber-400 mt-0.5 break-all max-w-[280px]">${selectedMessage.metadata?.filePath || ''}</p>`;
+                                  }
+                                }}
+                              />
+                            </div>
+                          ) : selectedMessage.metadata?.filePath && selectedMessage.metadata.filePath.startsWith('img:') ? (
+                            <div 
+                              className="rounded-lg border border-[#E4E4E7] overflow-hidden cursor-zoom-in hover:opacity-90 transition-opacity bg-gray-50"
+                              onClick={() => setPreviewImage({ path: selectedMessage.metadata?.filePath || '', contactId: selectedMessage.contactId })}
+                            >
+                              <img 
+                                src={`/api/image?local_id=${selectedMessage.metadata.filePath.slice(4)}&chat=${encodeURIComponent(selectedMessage.contactId)}`}
+                                alt="图片"
+                                className="w-full h-auto max-h-[400px] object-contain bg-gray-50"
+                                onError={(e) => {
+                                  const target = e.target as HTMLImageElement;
+                                  target.style.display = 'none';
+                                  const parent = target.parentElement;
+                                  if (parent) {
+                                    parent.className = 'p-6 text-center rounded-lg border border-[#E4E4E7] bg-gray-50';
+                                    parent.onclick = null;
+                                    parent.style.cursor = 'default';
+                                    parent.innerHTML = `<svg xmlns="http://www.w3.org/2000/svg" class="w-12 h-12 text-gray-300 mx-auto mb-2" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><rect x="3" y="3" width="18" height="18" rx="2"/><circle cx="8.5" cy="8.5" r="1.5"/><path d="m21 15-5-5L5 21"/></svg><p class="text-xs text-gray-500 font-medium">图片加载失败</p><p class="text-[10px] text-gray-400 mt-1">local_id=${selectedMessage.metadata.filePath.slice(4)}</p>`;
                                   }
                                 }}
                               />
@@ -998,9 +1022,27 @@ export function MessageTable({ messages, title, icon, searchPlaceholder, showFil
           onClick={() => setPreviewImage(null)}
         >
           <div className="relative max-w-4xl max-h-full w-auto flex flex-col items-center gap-4">
-             {!previewImage.startsWith('img:') ? (
+             {previewImage.path.startsWith('img:') ? (
                <img 
-                 src={`/api/file?path=${encodeURIComponent(previewImage)}`}
+                 src={`/api/image?local_id=${previewImage.path.slice(4)}&chat=${encodeURIComponent(previewImage.contactId || '')}`}
+                 alt="预览"
+                 className="max-w-full max-h-[80vh] object-contain rounded-lg shadow-2xl"
+                 onClick={(e) => e.stopPropagation()}
+                 onError={(e) => {
+                   const target = e.target as HTMLImageElement;
+                   target.style.display = 'none';
+                   const parent = target.parentElement;
+                   if (parent) {
+                     const errDiv = document.createElement('div');
+                     errDiv.className = 'bg-[#1a1a2e] rounded-lg border border-gray-700 p-8 flex items-center justify-center min-h-[200px]';
+                     errDiv.innerHTML = `<div class="text-center"><svg xmlns="http://www.w3.org/2000/svg" class="w-12 h-12 text-gray-500/50 mx-auto mb-3" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><rect x="3" y="3" width="18" height="18" rx="2"/><circle cx="8.5" cy="8.5" r="1.5"/><path d="m21 15-5-5L5 21"/></svg><p class="text-sm text-gray-400 font-medium">图片预览不可用</p><p class="text-xs text-gray-500 mt-2">local_id=${previewImage.path.slice(4)}</p></div>`;
+                     parent.insertBefore(errDiv, target);
+                   }
+                 }}
+               />
+             ) : (
+               <img 
+                 src={`/api/file?path=${encodeURIComponent(previewImage.path)}`}
                  alt="预览"
                  className="max-w-full max-h-[80vh] object-contain rounded-lg shadow-2xl"
                  onClick={(e) => e.stopPropagation()}
@@ -1011,19 +1053,11 @@ export function MessageTable({ messages, title, icon, searchPlaceholder, showFil
                    if (parent) {
                      const errDiv = document.createElement('div');
                      errDiv.className = 'bg-[#1a1a2e] rounded-lg border border-amber-700/50 p-8 flex items-center justify-center min-h-[200px]';
-                     errDiv.innerHTML = `<div class="text-center"><svg xmlns="http://www.w3.org/2000/svg" class="w-12 h-12 text-amber-500/50 mx-auto mb-3" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><rect x="3" y="3" width="18" height="18" rx="2"/><circle cx="8.5" cy="8.5" r="1.5"/><path d="m21 15-5-5L5 21"/></svg><p class="text-sm text-amber-300/80 font-medium">图片加载失败</p><p class="text-xs text-amber-400/50 mt-2 break-all max-w-md">${previewImage}</p><p class="text-xs text-gray-500 mt-2">请检查图片文件是否存在或加密方式是否变化</p></div>`;
+                     errDiv.innerHTML = `<div class="text-center"><svg xmlns="http://www.w3.org/2000/svg" class="w-12 h-12 text-amber-500/50 mx-auto mb-3" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><rect x="3" y="3" width="18" height="18" rx="2"/><circle cx="8.5" cy="8.5" r="1.5"/><path d="m21 15-5-5L5 21"/></svg><p class="text-sm text-amber-300/80 font-medium">图片加载失败</p><p class="text-xs text-amber-400/50 mt-2 break-all max-w-md">${previewImage.path}</p><p class="text-xs text-gray-500 mt-2">请检查图片文件是否存在或加密方式是否变化</p></div>`;
                      parent.insertBefore(errDiv, target);
                    }
                  }}
                />
-             ) : (
-               <div className="bg-[#1a1a2e] rounded-lg border border-gray-700 p-8 flex items-center justify-center min-h-[200px]">
-                 <div className="text-center">
-                   <ImageIcon className="w-16 h-16 text-gray-600 mx-auto mb-3" />
-                   <p className="text-sm text-gray-400">图片预览不可用</p>
-                   <p className="text-xs text-gray-500 mt-1 break-all max-w-md">{previewImage}</p>
-                 </div>
-               </div>
              )}
              <Button variant="outline" className="text-white border-gray-600 bg-gray-800 hover:bg-gray-700" onClick={() => setPreviewImage(null)}>
                关闭预览

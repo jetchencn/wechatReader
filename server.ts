@@ -388,10 +388,12 @@ async function startServer() {
       return;
     }
 
-    // Try to find image via CLI media resolution first
+    // Try to find image via CLI media resolution
+    // First try: targeted history query for the specific chat with high limit
+    // The local_id may be from any message, so we need a large limit
     if (chatName) {
-      const cliArgs = ['history', chatName, '--limit', '500', '--msg-type', 'image', '--media', '--format', 'json'];
-      const result = runCli(cliArgs, 30000);
+      const cliArgs = ['history', chatName, '--limit', '5000', '--media', '--format', 'json'];
+      const result = runCli(cliArgs, 60000);
       if (result.exitCode === 0) {
         try {
           const parsed = JSON.parse(result.stdout);
@@ -408,66 +410,25 @@ async function startServer() {
       }
     }
 
-    // Fallback: scan attach directory for image files by timestamp
-    // Get the message timestamp from search results to narrow down the date
-    const searchResult = runCli(['search', '', '--limit', '500', '--msg-type', 'image', '--format', 'json'], 30000);
-    let datePrefix = '';
+    // Second try: search across all chats for the image with this local_id
+    const searchArgs = ['search', '', '--limit', '5000', '--msg-type', 'image', '--media', '--format', 'json'];
+    const searchResult = runCli(searchArgs, 60000);
     if (searchResult.exitCode === 0) {
       try {
         const parsed = JSON.parse(searchResult.stdout);
         const messages: string[] = parsed.results || [];
         const targetMsg = messages.find((m: string) => m.includes(`local_id=${localId})`));
         if (targetMsg) {
-          const dateMatch = targetMsg.match(/\[(\d{4}-\d{2})-/);
-          if (dateMatch) datePrefix = dateMatch[1];
+          const pathMatch = targetMsg.match(/\[图片\]\s+((?:\/|\.\.\/|\w:\\)[^\s)]+?)(?:\s*\(文件不存在\))?/);
+          if (pathMatch && fs.existsSync(pathMatch[1])) {
+            res.redirect(`/api/file?path=${encodeURIComponent(pathMatch[1])}`);
+            return;
+          }
         }
       } catch { /* ignore */ }
     }
 
-    // Scan the WeChat attach directory for image files
-    const configPath = path.join(process.env.HOME || '/Users/chenshibin', '.wechat-reader', 'config.json');
-    let attachDir = '';
-    try {
-      const config = JSON.parse(fs.readFileSync(configPath, 'utf8'));
-      const wechatBase = path.dirname(config.db_dir);
-      attachDir = path.join(wechatBase, 'msg', 'attach');
-    } catch { /* ignore */ }
-
-    if (!attachDir || !fs.existsSync(attachDir)) {
-      res.status(404).json({ ok: false, error: 'WeChat attach directory not found' });
-      return;
-    }
-
-    // Scan subdirectories for matching date + Img folder
-    try {
-      const subdirs = fs.readdirSync(attachDir);
-      for (const subdir of subdirs) {
-        const dateDir = datePrefix
-          ? path.join(attachDir, subdir, datePrefix, 'Img')
-          : null;
-
-        const dirsToSearch: string[] = [];
-        if (dateDir && fs.existsSync(dateDir)) {
-          dirsToSearch.push(dateDir);
-        }
-
-        for (const imgDir of dirsToSearch) {
-          const files = fs.readdirSync(imgDir).filter(f => f.endsWith('.dat'));
-          // Find the _h.dat (PNG high quality) for the first image we can decode
-          const hdFiles = files.filter(f => f.endsWith('_h.dat'));
-          const thumbFiles = files.filter(f => f.endsWith('_t.dat'));
-          const origFiles = files.filter(f => !f.endsWith('_h.dat') && !f.endsWith('_t.dat') && !f.endsWith('_M.dat'));
-
-          // We can't match by md5 without the raw XML content
-          // But we can try to serve any available image for now
-          // A better approach would be to extract md5 from the message content
-          // For now, return a 404 since we can't determine which file matches
-          break;
-        }
-      }
-    } catch { /* ignore */ }
-
-    res.status(404).json({ ok: false, error: `Image not found for local_id=${localId} (CLI media resolution failed and md5 matching unavailable)` });
+    res.status(404).json({ ok: false, error: `Image not found for local_id=${localId}` });
   });
 
   // -----------------------------------------------------------------------
@@ -618,8 +579,9 @@ async function startServer() {
       }
 
       // Merge sessions: add groups that are not in contacts
+      // Also add person sessions that are not in contacts (e.g., the logged-in user "我")
       for (const s of sessions) {
-        if (s.is_group && !contactMap.has(s.username)) {
+        if (!contactMap.has(s.username)) {
           contactMap.set(s.username, {
             username: s.username,
             nick_name: s.chat,
@@ -645,6 +607,8 @@ async function startServer() {
       // Cache the full contacts list (no query filter)
       if (!query) {
         contactsCache = { data: responseData, timestamp: Date.now() };
+        // Trigger background preload for subscribed contacts
+        preloadSubscribedMessages();
       }
 
       res.json(responseData);
@@ -652,6 +616,163 @@ async function startServer() {
       res.status(500).json({ ok: false, error: 'Failed to parse CLI output: ' + String(e) });
     }
   });
+
+  // -----------------------------------------------------------------------
+  // Background preload: fetch messages for subscribed contacts
+  // This runs after contacts are loaded to warm the messages cache
+  // -----------------------------------------------------------------------
+  let preloadInProgress = false;
+  const preloadedContacts = new Set<string>();
+
+  async function preloadSubscribedMessages() {
+    if (preloadInProgress) return;
+    preloadInProgress = true;
+
+    const maxLimit = 5000; // Match default frontend maxQueryLimit
+
+    try {
+      const subs = loadSubscriptions();
+      const subscribedIds = subs.filter((s: any) => s.isSubscribed).map((s: any) => s.id);
+
+      // Preload in batches to avoid overwhelming the system
+      const BATCH_SIZE = 3;
+      for (let i = 0; i < subscribedIds.length; i += BATCH_SIZE) {
+        const batch = subscribedIds.slice(i, i + BATCH_SIZE);
+        await Promise.all(batch.map(async (contactId: string) => {
+          if (preloadedContacts.has(contactId)) return;
+          const cacheKey = getMessagesCacheKey([contactId], String(maxLimit), '0', '', '', '', '');
+          if (messagesCache.has(cacheKey)) {
+            preloadedContacts.add(contactId);
+            return;
+          }
+          try {
+            const result = runCli(['history', contactId, '--limit', String(maxLimit), '--offset', '0', '--media', '--format', 'json'], 60000);
+            if (result.exitCode === 0) {
+              // Parse and cache the result
+              const parsed = JSON.parse(result.stdout);
+              const messages = parseCliMessages(parsed, [contactId]);
+              const responseData = {
+                ok: true,
+                data: { scope: parsed.scope || '', count: messages.length, offset: 0, limit: maxLimit, messages },
+              };
+              messagesCache.set(cacheKey, { data: responseData, timestamp: Date.now() });
+              preloadedContacts.add(contactId);
+              console.log(`[preload] Cached ${messages.length} messages for ${contactId}`);
+            }
+          } catch (err) {
+            console.warn(`[preload] Failed to preload messages for ${contactId}:`, err);
+          }
+        }));
+      }
+    } catch (err) {
+      console.warn('[preload] Preload failed:', err);
+    } finally {
+      preloadInProgress = false;
+    }
+  }
+
+  // Helper: parse CLI messages output (extracted from /api/messages handler)
+  function parseCliMessages(parsed: any, chatNames: string[]): any[] {
+    const messages: any[] = [];
+    const lines: string[] = parsed.results || parsed.messages;
+    const historyChatName = parsed.chat || '';
+
+    for (const line of lines) {
+      if (typeof line !== 'string') continue;
+      const searchMatch = line.match(/^\[(\d{4}-\d{2}-\d{2} \d{2}:\d{2})\] \[([^\]]+)\]\s*([\s\S]+)$/);
+      const historyMatch = line.match(/^\[(\d{4}-\d{2}-\d{2} \d{2}:\d{2})\]\s*([\s\S]+)$/);
+
+      let timeStr = '';
+      let chatName = '';
+      let rest = '';
+
+      if (searchMatch) {
+        timeStr = searchMatch[1];
+        chatName = searchMatch[2];
+        rest = searchMatch[3];
+      } else if (historyMatch) {
+        timeStr = historyMatch[1];
+        chatName = historyChatName || chatNames[0] || '';
+        rest = historyMatch[2];
+      } else {
+        continue;
+      }
+
+      const tsMatch = timeStr.match(/^(\d{4})-(\d{2})-(\d{2}) (\d{2}):(\d{2})$/);
+      let timestamp = 0;
+      if (tsMatch) {
+        const [, y, m, d, h, min] = tsMatch;
+        timestamp = new Date(Number(y), Number(m) - 1, Number(d), Number(h), Number(min)).getTime();
+      } else {
+        timestamp = new Date(timeStr).getTime();
+      }
+      if (isNaN(timestamp)) continue;
+
+      const isGroup = chatName.includes('群') || chatName.includes('group') || chatNames.some(cn => cn.includes('@chatroom'));
+
+      let sender = '';
+      let content = rest;
+      const senderMatch = rest.match(/^([^:]+):\s*([\s\S]*)$/);
+      if (senderMatch) {
+        sender = senderMatch[1].trim();
+        content = senderMatch[2];
+      }
+
+      const trimmedContent = content.trimStart();
+      let contentType = 'text';
+      const metadata: any = {};
+
+      if (trimmedContent.startsWith('[图片]')) {
+        contentType = 'image';
+        const pathMatch = trimmedContent.match(/\[图片\]\s+((?:\/|\.\.\/|\w:\\)[^\s]+?)(?:\s*\(文件不存在\))?$/);
+        if (pathMatch) metadata.filePath = pathMatch[1];
+        if (!metadata.filePath) {
+          const lidMatch = trimmedContent.match(/local_id=(\d+)/);
+          if (lidMatch) metadata.filePath = `img:${lidMatch[1]}`;
+        }
+      } else if (trimmedContent.startsWith('[语音]')) {
+        contentType = 'voice';
+      } else if (trimmedContent.startsWith('[视频]')) {
+        contentType = 'video';
+      } else if (trimmedContent.startsWith('[文件]')) {
+        contentType = 'file';
+      } else if (trimmedContent.startsWith('[链接]') || trimmedContent.startsWith('[链接/文件]')) {
+        contentType = 'link';
+        const urlMatch = trimmedContent.match(/https?:\/\/[^\s<>"']+/);
+        if (urlMatch) metadata.url = decodeXmlEntities(urlMatch[0]);
+      } else if (trimmedContent.startsWith('[小程序]')) {
+        contentType = 'link';
+      }
+
+      const isOfficialAccount = chatNames.some(cn => cn.startsWith('gh_')) || chatName.includes('公众号') || sender.startsWith('gh_');
+      if (isOfficialAccount || contentType === 'link') {
+        if (!metadata.url) {
+          const urlMatch = content.match(/https?:\/\/[^\s<>"']+/);
+          if (urlMatch) metadata.url = decodeXmlEntities(urlMatch[0]);
+        }
+        if (metadata.url && (metadata.url.includes('mp.weixin.qq.com') || metadata.url.includes('wechat.com'))) {
+          if (contentType === 'link') contentType = 'article';
+        }
+      }
+
+      const msgObj: any = {
+        id: `msg-${timestamp}-${Math.random().toString(36).slice(2, 8)}`,
+        type: isGroup ? 'group' : isOfficialAccount ? 'official_account' : 'person',
+        contactId: chatName,
+        senderName: sender || chatName,
+        contentType,
+        content,
+        timestamp,
+      };
+
+      if (Object.keys(metadata).length > 0) {
+        msgObj.metadata = metadata;
+      }
+
+      messages.push(msgObj);
+    }
+    return messages;
+  }
 
   // -----------------------------------------------------------------------
   // API: subscriptions CRUD
@@ -689,11 +810,19 @@ async function startServer() {
   });
 
   // -----------------------------------------------------------------------
+  // API: trigger background preload for subscribed contacts
+  // -----------------------------------------------------------------------
+  app.post("/api/preload", (_req, res) => {
+    res.json({ ok: true, message: 'Preload started in background' });
+    preloadSubscribedMessages();
+  });
+
+  // -----------------------------------------------------------------------
   // Messages response cache (in-memory, keyed by CLI args)
   // -----------------------------------------------------------------------
   const messagesCache = new Map<string, { data: any; timestamp: number }>();
-  const MESSAGES_CACHE_TTL = 2 * 60 * 1000; // 2 minutes
-  const MESSAGES_CACHE_MAX = 30;
+  const MESSAGES_CACHE_TTL = 10 * 60 * 1000; // 10 minutes (WeChat data doesn't change frequently)
+  const MESSAGES_CACHE_MAX = 50;
 
   function getMessagesCacheKey(chatNames: string[], limit: string, offset: string, keyword: string, msgType: string, startTime: string, endTime: string): string {
     return `${chatNames.sort().join(',')}|${limit}|${offset}|${keyword}|${msgType}|${startTime}|${endTime}`;
@@ -775,7 +904,7 @@ async function startServer() {
       const useHistory = chatNames.length === 1 && !keyword;
       const args: string[] = [];
       if (useHistory) {
-        args.push('history', chatNames[0], '--limit', limit, '--offset', offset, '--format', 'json');
+        args.push('history', chatNames[0], '--limit', limit, '--offset', offset, '--media', '--format', 'json');
       } else {
         args.push('search', keyword, '--limit', limit, '--offset', offset, '--format', 'json');
         for (const cn of chatNames) {

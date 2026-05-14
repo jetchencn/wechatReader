@@ -55,6 +55,8 @@ export function MainLayout() {
         if (subscribedContacts.length > 0) {
           setContacts(subscribedContacts);
           setSubscribedContacts(savedIds);
+          // Trigger server-side background preload for subscribed contacts
+          fetch('/api/preload', { method: 'POST' }).catch(() => {});
         }
       } catch (err) {
         console.error('Failed to load saved subscriptions:', err);
@@ -82,17 +84,22 @@ export function MainLayout() {
     <div className="flex flex-col h-screen bg-[#F4F4F5] text-[#18181B] font-sans overflow-hidden">
       <header className="flex items-center justify-between px-6 py-3 bg-white border-b border-[#E4E4E7]">
         <div className="flex items-center gap-3">
-          <div className="w-8 h-8 rounded-lg bg-[#07C160] flex items-center justify-center shrink-0">
-            <svg viewBox="0 0 24 24" fill="none" className="w-5 h-5" xmlns="http://www.w3.org/2000/svg">
-              <path d="M8.5 6C5.46 6 3 8.24 3 11c0 1.56.78 2.96 2 3.86L4.5 17l2.5-1.5c.78.3 1.63.5 2.5.5.34 0 .67-.03 1-.08C10.18 15.48 10 15 10 14.5c0-2.76 2.46-5 5.5-5 .34 0 .67.03 1 .08C16.12 7.48 12.76 6 8.5 6z" fill="white"/>
-              <path d="M15.5 11c-2.49 0-4.5 1.79-4.5 4s2.01 4 4.5 4c.67 0 1.3-.12 1.87-.33L19.5 20l-.62-1.87C19.9 17.33 20 16.44 20 15.5c0-2.21-2.01-4.5-4.5-4.5z" fill="white" fillOpacity="0.85"/>
-              <circle cx="7" cy="10.5" r="0.8" fill="white"/>
-              <circle cx="10" cy="10.5" r="0.8" fill="white"/>
-              <circle cx="14" cy="15" r="0.6" fill="white"/>
-              <circle cx="17" cy="15" r="0.6" fill="white"/>
-            </svg>
+          <div className="w-8 h-8 rounded-lg bg-black flex items-center justify-center shrink-0">
+            <img
+              src="/wechatreader-logo.png"
+              alt="WeChatReader Logo"
+              className="w-full h-full object-contain rounded-lg"
+              onError={(e) => {
+                const target = e.target as HTMLImageElement;
+                target.style.display = 'none';
+                const parent = target.parentElement;
+                if (parent && !parent.querySelector('.fallback-icon')) {
+                  parent.innerHTML += '<svg class="fallback-icon w-5 h-5" viewBox="0 0 24 24" fill="none" stroke="white" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/></svg>';
+                }
+              }}
+            />
           </div>
-          <span className="font-semibold text-lg tracking-tight italic">WechatReader</span>
+          <span className="font-semibold text-lg tracking-tight italic">WeChatReader</span>
           <div className="h-4 w-[1px] bg-[#E4E4E7] mx-2"></div>
           <span className="text-sm text-[#71717A]">私有化微信内容管理</span>
         </div>

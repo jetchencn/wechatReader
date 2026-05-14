@@ -8,8 +8,8 @@ import { getMaxQueryLimit } from './SettingsView';
 
 // LRU cache for contact messages (keyed by contactId)
 const messageCache = new Map<string, { messages: WeChatMessage[]; timestamp: number }>();
-const MESSAGE_CACHE_TTL = 5 * 60 * 1000; // 5 minutes
-const MESSAGE_CACHE_MAX = 20;
+const MESSAGE_CACHE_TTL = 15 * 60 * 1000; // 15 minutes
+const MESSAGE_CACHE_MAX = 30;
 
 // Prefetch queue: track in-flight prefetch requests
 const prefetchInFlight = new Set<string>();
@@ -47,6 +47,7 @@ export function prefetchContactMessages(contactId: string) {
 
   prefetchInFlight.add(contactId);
   const maxLimit = getMaxQueryLimit();
+  // Fetch full dataset to ensure cache is complete
   const params = new URLSearchParams({ limit: String(maxLimit), offset: '0', chat: contactId });
 
   fetch(`/api/messages?${params.toString()}`)
@@ -98,19 +99,48 @@ export function ContentArea() {
     }
 
     // Check cache first (skip on explicit refresh)
-    if (refreshKey === 0) {
-      const cached = getCachedMessages(selectedContactId);
-      if (cached) {
-        setServerMessages(cached);
-        setIsLoading(false);
-        setFetchError(null);
-        return;
-      }
+    // Always show cached data immediately, but also trigger background full fetch
+    // to ensure we get the complete dataset (cache may only contain quick-fetch results)
+    const cachedData = refreshKey === 0 ? getCachedMessages(selectedContactId) : null;
+    if (cachedData) {
+      setServerMessages(cachedData);
+      setIsLoading(false);
+      setFetchError(null);
     }
 
     let cancelled = false;
 
     async function fetchMessages() {
+      // If we have cached data, only do a full fetch (cached data already provides quick results)
+      if (cachedData) {
+        const maxLimit = getMaxQueryLimit();
+        // Only fetch full if cached data looks truncated
+        if (cachedData.length >= 200 && maxLimit > cachedData.length) {
+          try {
+            const fullParams = new URLSearchParams({ limit: String(maxLimit), offset: '0', chat: selectedContactId });
+            const fullRes = await fetch(`/api/messages?${fullParams.toString()}`);
+            if (cancelled) return;
+
+            if (fullRes.ok) {
+              const fullJson = await fullRes.json();
+              if (cancelled) return;
+
+              if (fullJson.ok && Array.isArray(fullJson.data?.messages)) {
+                const fullMsgs = fullJson.data.messages as WeChatMessage[];
+                setServerMessages(fullMsgs);
+                setCachedMessages(selectedContactId, fullMsgs);
+                return;
+              }
+            }
+            // Full fetch failed — keep showing cached data
+          } catch {
+            // Keep showing cached data
+          }
+        }
+        return; // Cached data is sufficient
+      }
+
+      // No cache: do the full quick-then-full fetch flow
       setIsLoading(true);
       setFetchError(null);
       const maxLimit = getMaxQueryLimit();

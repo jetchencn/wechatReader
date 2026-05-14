@@ -909,14 +909,15 @@ fn _query_messages(
 
     let param_refs: Vec<&dyn rusqlite::types::ToSql> = all_params.iter().map(|p| p.as_ref()).collect();
     let rows = stmt.query_map(param_refs.as_slice(), |row| {
-        Ok((
-            row.get::<_, i64>(0)?,
-            row.get::<_, i64>(1)?,
-            row.get::<_, i64>(2)?,
-            row.get::<_, i64>(3)?,
-            row.get::<_, Vec<u8>>(4)?,
-            row.get::<_, Option<i64>>(5)?,
-        ))
+        let local_id: i64 = row.get(0)?;
+        let local_type: i64 = row.get(1)?;
+        let create_time: i64 = row.get(2)?;
+        let real_sender_id: i64 = row.get(3)?;
+        // message_content may be BLOB (compressed) or TEXT (plain text)
+        let content_bytes: Vec<u8> = row.get::<_, Vec<u8>>(4)
+            .or_else(|_| row.get::<_, String>(4).map(|s| s.into_bytes()))?;
+        let ct: Option<i64> = row.get(5)?;
+        Ok((local_id, local_type, create_time, real_sender_id, content_bytes, ct))
     })
     .map_err(|e| format!("查询失败: {}", e))?;
 
@@ -924,6 +925,8 @@ fn _query_messages(
     for row in rows {
         if let Ok(r) = row {
             results.push(r);
+        } else {
+            log::warn!("_query_messages: skipping row due to read error");
         }
     }
     Ok(results)
